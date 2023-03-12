@@ -1,0 +1,39 @@
+# environment variables
+.env
+
+# Rust target directory
+*/target/
+
+*/temp/
+*/archive/
+*/path/
+
+# Rust build artifacts
+Cargo.lock
+Cargo.toml.orig
+Cargo.toml.bk
+
+# Generated binary files
+*.exe
+*.exe.*
+*.dll
+*.so
+*.dylib
+
+# Generated documentation files
+*/doc/
+*/target/doc/
+
+# IDE-specific files
+*/.vscode/
+*/.idea/
+
+# Miscellaneous
+*.DS_Store
+*.log
+*.swp
+*.swo
+*~
+
+# Updated version of tus_client
+tus_client/
