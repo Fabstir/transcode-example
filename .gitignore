@@ -35,3 +35,7 @@ Cargo.toml.bk
 *.swo
 *~
 *.crt
+
+# tus_client
+tus_client/tests
+tus_client/target
