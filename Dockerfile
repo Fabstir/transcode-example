@@ -24,8 +24,10 @@ RUN apt-get update && \
 # Copy the proto directory and generate Rust code for the transcode_server project using build.rs
 COPY transcode_server/proto ./proto
 
+COPY transcode_server/Cargo.toml transcode_server/Cargo.lock ./
+
 # Build the transcode_server project, which will also build the tus_client dependency
-RUN cargo build --manifest-path ./Cargo.toml --bin transcode-server
+RUN cargo build --release --bin transcode-server
 
 # Runtime stage
 FROM debian:bullseye-slim
