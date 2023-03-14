@@ -15,14 +15,21 @@ jobs:
         # See supported Node.js release schedule at https://nodejs.org/en/about/releases/
 
     steps:
-      - uses: actions/checkout@v3
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v3
+      - uses: actions/checkout@v2
+      - name: Build Docker image
+        uses: docker/build-push-action@v2
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-      - run: npm install
-      - run: npm run build --if-present
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: julesl123/fabstir-transcoder-example:v1.0
+      - name: Build Rust project
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+      - name: Build
+        run: cargo build --release
 
   test-stage:
     runs-on: ubuntu-latest
