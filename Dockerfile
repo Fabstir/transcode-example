@@ -25,6 +25,8 @@ RUN apt-get update && \
 RUN which protoc || find / -name protoc
 ENV PROTOC /usr/bin/protoc
 
+RUN chmod 755 /usr/bin/protoc
+
 # Copy the proto directory and generate Rust code for the transcode_server project using build.rs
 COPY transcode_server/proto ./proto
 
