@@ -26,7 +26,9 @@ RUN apt-get update && \
 # Sets the PROTOC environment variable to the path of the protoc binary in the Docker container
 #RUN which protoc || find / -name protoc
 
-COPY ../protoc/bin/protoc /usr/bin/protoc/
+RUN mkdir -p usr/bin/protoc && chmod 777 usr/bin/protoc
+
+COPY protoc/bin/protoc /usr/bin/protoc/
 ENV PROTOC /usr/bin/protoc
 
 # RUN cargo install protobuf-codegen
