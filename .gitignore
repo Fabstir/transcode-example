@@ -1,5 +1,6 @@
 # environment variables
 .env
+my-secret.yaml
 
 # Rust target directory
 */target/
@@ -34,6 +35,7 @@ Cargo.toml.bk
 *.swp
 *.swo
 *~
+*.crt
 
 # Updated version of tus_client
 tus_client/

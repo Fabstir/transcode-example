@@ -33,9 +33,13 @@ FROM debian:bullseye-slim
 WORKDIR /usr/local/bin
 
 RUN apt-get update && \
-  apt-get install -y ffmpeg
+  apt-get install -y ffmpeg && \
+  apt-get install -y openssl ca-certificates
 
-COPY transcode_server/path/to/file ./path/to/file
+# Copy the root CA certificate to the container
+COPY s5-root-ca.crt /usr/local/share/ca-certificates/s5-root-ca.crt
+
+RUN mkdir -p ./path/to/file && chmod 777 ./path/to/file
 RUN mkdir -p ./temp/to/transcode && chmod 777 ./temp/to/transcode
 
 # Copy transode-server binary from build stage 
