@@ -24,6 +24,9 @@ RUN apt-get update && \
 # Copy the proto directory and generate Rust code for the transcode_server project using build.rs
 COPY transcode_server/proto ./proto
 
+# Copy the Cargo.lock file for transcode_server
+COPY transcode_server/Cargo.lock ./transcode_server/
+
 # Build the transcode_server project, which will also build the tus_client dependency
 RUN cargo build --release --bin transcode-server
 
