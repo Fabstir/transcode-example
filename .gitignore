@@ -41,4 +41,4 @@ tus_client/tests
 tus_client/target
 
 # protoc
-protoc/
+protoc/include/
