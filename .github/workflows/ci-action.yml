@@ -35,6 +35,7 @@ jobs:
           profile: minimal
           toolchain: stable
       - name: Build
+        working-directory: ./transcode_server
         run: cargo build --release
 
   test-stage:
