@@ -2180,6 +2180,7 @@ dependencies = [
  "once_cell",
  "prost",
  "prost-build",
+ "prost-derive",
  "reqwest",
  "sanitize-filename",
  "tokio 1.26.0",

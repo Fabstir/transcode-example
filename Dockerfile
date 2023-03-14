@@ -21,7 +21,7 @@ RUN apt-get update && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && apt-get install --no-install-recommends --assume-yes protobuf-compiler
+# RUN apt-get update && apt-get install --no-install-recommends --assume-yes protobuf-compiler
 
 # Sets the PROTOC environment variable to the path of the protoc binary in the Docker container
 #RUN which protoc || find / -name protoc
