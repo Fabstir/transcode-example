@@ -27,7 +27,7 @@ RUN apt-get update && \
 # Sets the PROTOC environment variable to the path of the protoc binary in the Docker container
 #RUN which protoc || find / -name protoc
 
-RUN mkdir -p usr/bin/protoc && chmod 777 usr/bin/protoc
+RUN chmod +x /usr/bin/protoc
 
 ENV PROTOC /usr/bin/protoc
 
