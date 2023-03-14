@@ -10,7 +10,6 @@ my-secret.yaml
 */path/
 
 # Rust build artifacts
-Cargo.lock
 Cargo.toml.orig
 Cargo.toml.bk
 
