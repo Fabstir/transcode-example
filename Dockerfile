@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.67
+FROM rust:latest as build
 
 WORKDIR /usr/src/transcode-example
 
@@ -26,6 +26,8 @@ RUN apt-get update && \
 # Sets the PROTOC environment variable to the path of the protoc binary in the Docker container
 #RUN which protoc || find / -name protoc
 #ENV PROTOC /usr/bin/protoc
+
+RUN cargo install protobuf-codegen
 
 # Copy the proto directory and generate Rust code for the transcode_server project using build.rs
 COPY transcode_server/proto ./proto
