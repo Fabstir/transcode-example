@@ -24,7 +24,7 @@ jobs:
           push: false
           tags: julesl123/fabstir-transcoder-example:v1.0
         env:
-            S5_ROOT_CA: ${{ secrets.S5_ROOT_CA }}          
+          S5_ROOT_CA: ${{ secrets.S5_ROOT_CA }}          
       - name: Build Rust project
         uses: actions-rs/toolchain@v1
         with:
