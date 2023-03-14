@@ -37,7 +37,7 @@ ENV PROTOC /usr/bin/protoc
 COPY transcode_server/proto ./proto
 
 # Build the transcode_server project, which will also build the tus_client dependency
-RUN cargo build --release --bin transcode-server
+RUN PROTOC=/usr/bin/protoc cargo build --release --bin transcode-server
 
 # Runtime stage
 FROM debian:bullseye-slim
