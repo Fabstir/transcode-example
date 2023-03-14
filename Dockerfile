@@ -28,7 +28,7 @@ RUN apt-get update && \
 
 RUN mkdir -p usr/bin/protoc && chmod 777 usr/bin/protoc
 
-COPY ../protoc/bin/protoc /usr/bin/protoc/
+COPY ../protoc/bin /usr/bin
 ENV PROTOC /usr/bin/protoc
 
 # RUN cargo install protobuf-codegen
