@@ -17,14 +17,15 @@ WORKDIR /usr/src/transcode-example/transcode_server
 
 # Install required dependencies
 RUN apt-get update && \
-  apt-get install -y protobuf-compiler wget && \
+  apt-get install -y build-essential protobuf-compiler-grpc wget protobuf-compiler && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 
-# Generate Rust code for the transcode_server project using pre-compiled proto files
+# Sets the PROTOC environment variable to the path of the protoc binary in the Docker container
+ENV PROTOC /usr/bin/protoc
+
+# Copy the proto directory and generate Rust code for the transcode_server project using build.rs
 COPY transcode_server/proto ./proto
-COPY transcode_server/proto/*.rs ./src/
-RUN sed -i 's/extern crate transcode;/pub mod transcode;/g' ./src/*.rs
 
 # Build the transcode_server project, which will also build the tus_client dependency
 RUN cargo build --release --bin transcode-server
@@ -56,4 +57,4 @@ EXPOSE 50051
 ENV LD_LIBRARY_PATH=/usr/local/bin 
 
 # Set transode-server binary as entrypoint 
-ENTRYPOINT ["sh", "-c", "./transcode-server"]
+ENTRYPOINT ["./transcode-server"]

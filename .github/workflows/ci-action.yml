@@ -8,6 +8,8 @@ on:
 
 jobs:
   build:
+    env:
+      PROTOC: /usr/bin/protoc
     runs-on: ubuntu-latest
     strategy:
       matrix:

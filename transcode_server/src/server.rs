@@ -242,13 +242,13 @@ impl Drop for TranscodeServiceHandler {
     }
 }
 
-// pub mod transcode {
-//     tonic::include_proto!("transcode");
-// }
-
 pub mod transcode {
-    include!(concat!(env!("OUT_DIR"), "/transcode.rs"));
+    tonic::include_proto!("transcode");
 }
+
+// pub mod transcode {
+//     include!(concat!(env!("OUT_DIR"), "/transcode.rs"));
+// }
 
 // #[derive(Debug, Default)]
 // pub struct MyTranscode {}
