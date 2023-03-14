@@ -25,7 +25,7 @@ RUN apt-get update && \
 COPY transcode_server/proto ./proto
 
 # Build the transcode_server project, which will also build the tus_client dependency
-RUN cargo build --release --bin transcode-server
+RUN cargo build --manifest-path ./Cargo.toml --bin transcode-server
 
 # Runtime stage
 FROM debian:bullseye-slim
