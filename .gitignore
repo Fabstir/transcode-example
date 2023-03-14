@@ -39,3 +39,6 @@ Cargo.toml.bk
 # tus_client
 tus_client/tests
 tus_client/target
+
+# protoc
+protoc/
