@@ -17,12 +17,14 @@ WORKDIR /usr/src/transcode-example/transcode_server
 
 # Install required dependencies
 RUN apt-get update && \
-  apt-get install -y build-essential wget protobuf-compiler && \
+  apt-get install -y build-essential wget && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 
-# Generate Rust code for the transcode_server project using build.rs
+# Generate Rust code for the transcode_server project using pre-compiled proto files
 COPY transcode_server/proto ./proto
+COPY transcode_server/proto/*.rs ./src/
+RUN sed -i 's/extern crate transcode;/pub mod transcode;/g' ./src/*.rs
 
 # Build the transcode_server project, which will also build the tus_client dependency
 RUN cargo build --release --bin transcode-server
