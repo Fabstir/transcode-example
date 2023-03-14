@@ -66,4 +66,5 @@ EXPOSE 50051
 ENV LD_LIBRARY_PATH=/usr/local/bin 
 
 # Set transode-server binary as entrypoint 
-ENTRYPOINT ["./transcode-server"]
+ENTRYPOINT ["sh", "-c", "PROTOC=$PROTOC ./transcode-server"]
+
