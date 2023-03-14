@@ -35,6 +35,3 @@ Cargo.toml.bk
 *.swo
 *~
 *.crt
-
-# Updated version of tus_client
-tus_client/
