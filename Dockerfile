@@ -37,7 +37,7 @@ RUN apt-get update && \
   apt-get install -y openssl ca-certificates
 
 # Copy the root CA certificate to the container
-RUN echo "${{ secrets.S5_ROOT_CA }}" > /usr/local/share/ca-certificates/s5-root-ca.crt \
+RUN echo "$S5_ROOT_CA" > /usr/local/share/ca-certificates/s5-root-ca.crt \
   && chmod 644 /usr/local/share/ca-certificates/s5-root-ca.crt \
   && update-ca-certificates
 
