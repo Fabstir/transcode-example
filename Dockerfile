@@ -17,8 +17,7 @@ WORKDIR /usr/src/transcode-example/transcode_server
 
 # Install required dependencies
 RUN apt-get update && \
-  apt-get install -y build-essential wget && \
-  apt-get install -y protobuf-compiler && \
+  apt-get install -y build-essential protobuf-compiler-grpc wget protobuf-compiler && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 
