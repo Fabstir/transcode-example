@@ -6,6 +6,7 @@ WORKDIR /usr/src/transcode-example
 # Copy the Cargo.toml and Cargo.lock files for both projects into the Docker image
 COPY tus_client/Cargo.toml tus_client/Cargo.lock ./tus_client/
 COPY transcode_server/Cargo.toml transcode_server/Cargo.lock ./transcode_server/
+COPY protoc/bin /usr/bin
 
 # Copy the source code and the build.rs file for both projects into the Docker image
 COPY tus_client/src ./tus_client/src
@@ -28,7 +29,6 @@ RUN apt-get update && \
 
 RUN mkdir -p usr/bin/protoc && chmod 777 usr/bin/protoc
 
-COPY ../protoc/bin /usr/bin
 ENV PROTOC /usr/bin/protoc
 
 # RUN cargo install protobuf-codegen
