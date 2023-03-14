@@ -22,6 +22,7 @@ RUN apt-get update && \
   rm -rf /var/lib/apt/lists/*
 
 # Sets the PROTOC environment variable to the path of the protoc binary in the Docker container
+RUN which protoc || find / -name protoc
 ENV PROTOC /usr/bin/protoc
 
 # Copy the proto directory and generate Rust code for the transcode_server project using build.rs
