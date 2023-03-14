@@ -1,7 +1,7 @@
 # Build stage
 FROM rust:latest as build
 
-WORKDIR /usr/src/transcode
+WORKDIR /usr/src/transcode-example
 
 # Copy the Cargo.toml and Cargo.lock files for both projects into the Docker image
 COPY tus_client/Cargo.toml tus_client/Cargo.lock ./tus_client/
@@ -13,7 +13,7 @@ COPY transcode_server/src ./transcode_server/src
 COPY transcode_server/build.rs ./transcode_server/
 
 # Set the working directory to /usr/src/transcode/transcode_server
-WORKDIR /usr/src/transcode/transcode_server
+WORKDIR /usr/src/transcode-example/transcode_server
 
 # Install required dependencies
 RUN apt-get update && \
@@ -23,8 +23,6 @@ RUN apt-get update && \
 
 # Copy the proto directory and generate Rust code for the transcode_server project using build.rs
 COPY transcode_server/proto ./proto
-
-COPY transcode_server/Cargo.toml transcode_server/Cargo.lock ./
 
 # Build the transcode_server project, which will also build the tus_client dependency
 RUN cargo build --release --bin transcode-server
@@ -45,7 +43,7 @@ RUN mkdir -p ./path/to/file && chmod 777 ./path/to/file
 RUN mkdir -p ./temp/to/transcode && chmod 777 ./temp/to/transcode
 
 # Copy transode-server binary from build stage 
-COPY --from=build /usr/src/transcode/transcode_server/target/release/transcode-server .
+COPY --from=build /usr/src/transcode-example/transcode_server/target/release/transcode-server .
 
 # Expose port 50051 
 EXPOSE 50051 
