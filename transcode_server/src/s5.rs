@@ -10,8 +10,6 @@ use std::{collections::HashMap, fs, path::Path};
 use tus_client::Client;
 
 pub fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let token = var("TOKEN").unwrap();
-
     // Create a new client with default configuration
     let client = reqwest::Client::new();
 

@@ -5,7 +5,6 @@ use tonic::{transport::Server, Request, Response, Status};
 
 use once_cell::sync::Lazy;
 use sanitize_filename::sanitize;
-use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -19,7 +18,7 @@ use dotenv::dotenv;
 static VIDEO_CID: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::from("")));
 static VIDEO_CID1: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::from("")));
 static VIDEO_CID2: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::from("")));
-static path_to_file: &str = "path/to/file/";
+static PATH_TO_FILE: &str = "path/to/file/";
 
 // The transcoding task receiver, which receives transcoding tasks from the gRPC server
 async fn transcode_task_receiver(receiver: Arc<Mutex<mpsc::Receiver<String>>>) {
@@ -48,11 +47,11 @@ async fn transcode_task_receiver(receiver: Arc<Mutex<mpsc::Receiver<String>>>) {
 fn transcode_video(url: &str) -> Result<Response<TranscodeResponse>, Status> {
     println!("Downloading video from: {}", url);
 
-    let mut videoCID = VIDEO_CID.lock().unwrap();
-    *videoCID = url.to_string();
+    let mut video_cid = VIDEO_CID.lock().unwrap();
+    *video_cid = url.to_string();
 
     let file_name = sanitize(url);
-    let file_path = String::from(path_to_file.to_owned() + &file_name);
+    let file_path = String::from(PATH_TO_FILE.to_owned() + &file_name);
 
     match download_file(url, file_path.as_str()) {
         Ok(()) => println!("File downloaded successfully"),
@@ -121,8 +120,8 @@ fn transcode_video(url: &str) -> Result<Response<TranscodeResponse>, Status> {
                 &cid
             );
 
-            let mut videoCID1 = VIDEO_CID1.lock().unwrap();
-            *videoCID1 = cid;
+            let mut video_cid1 = VIDEO_CID1.lock().unwrap();
+            *video_cid1 = cid;
 
             response = TranscodeResponse {
                 status_code: 200,
@@ -151,8 +150,8 @@ fn transcode_video(url: &str) -> Result<Response<TranscodeResponse>, Status> {
                 &cid
             );
 
-            let mut videoCID2 = VIDEO_CID2.lock().unwrap();
-            *videoCID2 = cid;
+            let mut video_cid2 = VIDEO_CID2.lock().unwrap();
+            *video_cid2 = cid;
         }
         Err(e) => {
             response = TranscodeResponse {
@@ -245,31 +244,6 @@ impl Drop for TranscodeServiceHandler {
 pub mod transcode {
     tonic::include_proto!("transcode");
 }
-
-// pub mod transcode {
-//     include!(concat!(env!("OUT_DIR"), "/transcode.rs"));
-// }
-
-// #[derive(Debug, Default)]
-// pub struct MyTranscode {}
-
-// #[tonic::async_trait]
-// impl TranscodeService for MyTranscode {
-//     async fn transcode(
-//         &self,
-//         request: Request<TranscodeRequest>,
-//     ) -> Result<Response<TranscodeResponse>, Status> {
-//         let url = &request.get_ref().url;
-//         println!("Received URL: {}", url);
-
-//         let response = TranscodeResponse {
-//             status_code: 200,
-//             message: "URL received".into(),
-//         };
-
-//         Ok(Response::new(response))
-//     }
-// }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

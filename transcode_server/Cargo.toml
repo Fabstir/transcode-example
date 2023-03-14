@@ -27,7 +27,6 @@ tus_client = {version = "0.2.0", path = "../tus_client", features = ["reqwest"]}
 base64 = "0.21.0"
 tonic = "0.8"
 prost = "0.11"
-prost-derive = "0.11"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
 hex = "0.4.3"
 bytes = "1.4.0"
