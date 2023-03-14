@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:latest as build
+FROM rust:1.67
 
 WORKDIR /usr/src/transcode-example
 
