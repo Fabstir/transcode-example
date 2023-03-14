@@ -15,6 +15,9 @@ COPY transcode_server/build.rs ./transcode_server/
 # Set the working directory to /usr/src/transcode/transcode_server
 WORKDIR /usr/src/transcode-example/transcode_server
 
+# Install proto libraries 
+RUN cargo install protobuf
+
 # Install required dependencies
 RUN apt-get update && \
   apt-get install -y build-essential protobuf-compiler-grpc wget protobuf-compiler && \
@@ -24,8 +27,6 @@ RUN apt-get update && \
 # Sets the PROTOC environment variable to the path of the protoc binary in the Docker container
 RUN which protoc || find / -name protoc
 ENV PROTOC /usr/bin/protoc
-
-RUN chmod 755 /usr/bin/protoc
 
 # Copy the proto directory and generate Rust code for the transcode_server project using build.rs
 COPY transcode_server/proto ./proto
