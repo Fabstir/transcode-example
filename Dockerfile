@@ -6,7 +6,6 @@ WORKDIR /usr/src/transcode-example
 # Copy the Cargo.toml and Cargo.lock files for both projects into the Docker image
 COPY tus_client/Cargo.toml tus_client/Cargo.lock ./tus_client/
 COPY transcode_server/Cargo.toml transcode_server/Cargo.lock ./transcode_server/
-COPY protoc/bin/protoc /usr/bin/
 
 # Copy the source code and the build.rs file for both projects into the Docker image
 COPY tus_client/src ./tus_client/src
@@ -18,26 +17,15 @@ WORKDIR /usr/src/transcode-example/transcode_server
 
 # Install required dependencies
 RUN apt-get update && \
-  apt-get install -y build-essential wget && \
+  apt-get install -y build-essential wget protobuf-compiler && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/*
 
-# RUN apt-get update && apt-get install --no-install-recommends --assume-yes protobuf-compiler
-
-# Sets the PROTOC environment variable to the path of the protoc binary in the Docker container
-#RUN which protoc || find / -name protoc
-
-RUN chmod +x /usr/bin/protoc
-
-ENV PROTOC /usr/bin/protoc
-
-# RUN cargo install protobuf-codegen
-
-# Copy the proto directory and generate Rust code for the transcode_server project using build.rs
+# Generate Rust code for the transcode_server project using build.rs
 COPY transcode_server/proto ./proto
 
 # Build the transcode_server project, which will also build the tus_client dependency
-RUN PROTOC=/usr/bin/protoc cargo build --release --bin transcode-server
+RUN cargo build --release --bin transcode-server
 
 # Runtime stage
 FROM debian:bullseye-slim
@@ -66,5 +54,4 @@ EXPOSE 50051
 ENV LD_LIBRARY_PATH=/usr/local/bin 
 
 # Set transode-server binary as entrypoint 
-ENTRYPOINT ["sh", "-c", "PROTOC=$PROTOC ./transcode-server"]
-
+ENTRYPOINT ["sh", "-c", "./transcode-server"]
