@@ -161,8 +161,6 @@ fn transcode_video(url: &str) -> Result<Response<TranscodeResponse>, Status> {
         }
     };
 
-    //    Ok(())
-
     Ok(Response::new(response))
 }
 
