@@ -1,3 +1,15 @@
+/*
+ * index.mjs
+ *
+ * This file contains code for transcoding a video using ffmpeg.
+ * Upload a video in h264 format and it will be transcoded to 2 h264 mp4 files;
+ * one in 1080p format and another in 720p.
+ * This is then uploaded to decentralised SIA Storage via S5.
+ *
+ * Author: Jules Lai
+ * Date: 1 March 2023
+ */
+
 mod s5;
 use s5::{download_file, upload_video};
 
