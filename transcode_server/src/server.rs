@@ -189,11 +189,11 @@ impl TranscodeService for TranscodeServiceHandler {
         // Send the transcoding task to the transcoding task receiver
         if let Some(ref sender) = self.transcode_task_sender {
             println!("Before: if let Err(e) = sender.send(file_path).await");
-
-            let sender = sender.lock().await;
+        
+            let mut sender = sender.lock().await.clone();
             if let Err(e) = sender.send(url).await {
                 return Err(Status::internal(format!(
-                    "Failed to send transcoding task: {}",
+                    "Failed to send transcoding task: {},
                     e
                 )));
             }
