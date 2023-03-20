@@ -2407,6 +2407,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-std",
+ "async-trait",
  "base64 0.21.0",
  "blake3",
  "bytes 1.4.0",
