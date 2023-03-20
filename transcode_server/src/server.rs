@@ -1,24 +1,12 @@
-/*
- * server.rs
- *
- * This file contains code for transcoding a video using ffmpeg.
- * Upload a video in h264 format and it will be transcoded to 2 h264 mp4 files;
- * one in 1080p format and another in 720p.
- * This is then uploaded to decentralised SIA Storage via S5.
- *
- * Author: Jules Lai
- * Date: 1 March 2023
- */
-
 mod s5;
 use s5::{download_file, upload_video};
 
 use tonic::{transport::Server, Request, Response, Status};
 
-use async_std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
 use sanitize_filename::sanitize;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use transcode::{
     transcode_service_server::{TranscodeService, TranscodeServiceServer},
@@ -34,20 +22,32 @@ static PATH_TO_FILE: &str = "path/to/file/";
 
 // The transcoding task receiver, which receives transcoding tasks from the gRPC server
 async fn transcode_task_receiver(receiver: Arc<Mutex<mpsc::Receiver<String>>>) {
-    let mut receiver = receiver.lock().await;
-    while let Some(file_path) = receiver.recv().await {
-        println!("Transcoding video: {}", &file_path);
-        if let Err(e) = transcode_video(&file_path).await {
-            eprintln!("Failed to transcode {}: {}", &file_path, e);
+    let mut receiver = receiver.lock().unwrap();
+    loop {
+        match receiver.try_recv() {
+            Ok(file_path) => {
+                println!("Transcoding video: {}", &file_path);
+                if let Err(e) = transcode_video(&file_path) {
+                    eprintln!("Failed to transcode {}: {}", &file_path, e);
+                }
+            }
+            Err(e) => {
+                if e == mpsc::error::TryRecvError::Empty {
+                    continue;
+                } else {
+                    eprintln!("Failed to receive transcoding task: {}", e);
+                    break;
+                }
+            }
         }
     }
 }
 
 // Transcodes a video file to 1080p and 720p h264 mp4 formats using ffmpeg
-async fn transcode_video(url: &str) -> Result<Response<TranscodeResponse>, Status> {
+fn transcode_video(url: &str) -> Result<Response<TranscodeResponse>, Status> {
     println!("Downloading video from: {}", url);
 
-    let mut video_cid = VIDEO_CID.lock().await;
+    let mut video_cid = VIDEO_CID.lock().unwrap();
     *video_cid = url.to_string();
 
     let file_name = sanitize(url);
@@ -120,7 +120,7 @@ async fn transcode_video(url: &str) -> Result<Response<TranscodeResponse>, Statu
                 &cid
             );
 
-            let mut video_cid1 = VIDEO_CID1.lock().await;
+            let mut video_cid1 = VIDEO_CID1.lock().unwrap();
             *video_cid1 = cid;
 
             response = TranscodeResponse {
@@ -150,7 +150,7 @@ async fn transcode_video(url: &str) -> Result<Response<TranscodeResponse>, Statu
                 &cid
             );
 
-            let mut video_cid2 = VIDEO_CID2.lock().await;
+            let mut video_cid2 = VIDEO_CID2.lock().unwrap();
             *video_cid2 = cid;
         }
         Err(e) => {
@@ -160,6 +160,8 @@ async fn transcode_video(url: &str) -> Result<Response<TranscodeResponse>, Statu
             };
         }
     };
+
+    //    Ok(())
 
     Ok(Response::new(response))
 }
@@ -209,9 +211,10 @@ impl TranscodeService for TranscodeServiceHandler {
     ) -> Result<Response<GetCidResponse>, Status> {
         let resolution = request.get_ref().resolution.as_str();
 
+        // Assuming `resolution` is already defined and contains the resolution value
         let cidOption = match resolution {
-            "1080p" => Some(VIDEO_CID1.lock().await.to_string()),
-            "720p" => Some(VIDEO_CID2.lock().await.to_string()),
+            "1080p" => Some(VIDEO_CID1.lock().unwrap().to_string()),
+            "720p" => Some(VIDEO_CID2.lock().unwrap().to_string()),
             _ => None,
         };
 
