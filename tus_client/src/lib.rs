@@ -1,46 +1,3 @@
-//! # tus_client
-//!
-//! A Rust native client library to interact with *tus* enabled endpoints.
-//!
-//! ## `reqwest` implementation
-//!
-//! `tus_client` requires a "handler" which implements the `HttpHandler` trait. To include a default implementation of this trait for [`reqwest`](https://crates.io/crates/reqwest), specify the `reqwest` feature when including `tus_client` as a dependency.
-//!
-//! ```toml
-//! # Other parts of Cargo.toml omitted for brevity
-//! [dependencies]
-//! tus_client = {version = "x.x.x", features = ["reqwest"]}
-//! ```
-//!
-//! ## Usage
-//!
-//! ```rust
-//! use tus_client::Client;
-//! use reqwest;
-//!
-//! // Create an instance of the `tus_client::Client` struct.
-//! // Assumes "reqwest" feature is enabled (see above)
-//! let client = Client::new(reqwest::Client::new());
-//!
-//! // You'll need an upload URL to be able to upload a files.
-//! // This may be provided to you (through a separate API, for example),
-//! // or you might need to create the file through the *tus* protocol.
-//! // If an upload URL is provided for you, you can skip this step.
-//!
-//! let upload_url = client
-//! .create("https://my.tus.server/files/", "/path/to/file")
-//! .expect("Failed to create file on server");
-//!
-//! // Next, you can start uploading the file by calling `upload`.
-//! // The file will be uploaded in 5 MiB chunks by default.
-//! // To customize the chunk size, use `upload_with_chunk_size` instead of `upload`.
-//!
-//! client
-//! .upload(&upload_url, "/path/to/file")
-//! .expect("Failed to upload file to server");
-//! ```
-//!
-//! `upload` (and `upload_with_chunk_size`) will automatically resume the upload from where it left off, if the upload transfer is interrupted.
 #![doc(html_root_url = "https://docs.rs/tus_client/0.1.1")]
 use crate::http::{default_headers, Headers, HttpHandler, HttpMethod, HttpRequest};
 use std::collections::HashMap;
@@ -95,42 +52,50 @@ impl<'a> Client<'a> {
         self
     }
 
-    /// Get info about a file on the server.
+    /// Retrieves information about an upload from the Tus server.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The URL of the upload on the Tus server.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` which is `Ok` if the upload information is successfully retrieved, otherwise `Err`.
     pub fn get_info(&self, url: &str) -> Result<UploadInfo, Error> {
         let req = self.create_request(HttpMethod::Head, url, None, Some(default_headers()));
 
         let response = self.http_handler.deref().handle_request(req)?;
 
-        let bytes_uploaded = response.headers.get_by_key(headers::UPLOAD_OFFSET);
+        let bytes_uploaded = match response.headers.get_by_key(headers::UPLOAD_OFFSET) {
+            Some(val) => val.parse::<usize>()?,
+            None => return Err(Error::NotFoundError),
+        };
+
         let total_size = response
             .headers
             .get_by_key(headers::UPLOAD_LENGTH)
             .and_then(|l| l.parse::<usize>().ok());
+
         let metadata = response
             .headers
             .get_by_key(headers::UPLOAD_METADATA)
             .and_then(|data| base64::decode(data).ok())
-            .map(|decoded| {
-                String::from_utf8(decoded).unwrap().split(';').fold(
-                    HashMap::new(),
-                    |mut acc, key_val| {
+            .and_then(|decoded| String::from_utf8(decoded).ok())
+            .map(|decoded_str| {
+                decoded_str
+                    .split(';')
+                    .filter_map(|key_val| {
                         let mut parts = key_val.splitn(2, ':');
-                        if let Some(key) = parts.next() {
-                            acc.insert(
-                                String::from(key),
-                                String::from(parts.next().unwrap_or_default()),
-                            );
-                        }
-                        acc
-                    },
-                )
+                        let key = parts.next()?;
+                        let value = parts.next().map_or(String::new(), String::from);
+                        Some((String::from(key), value))
+                    })
+                    .collect::<HashMap<String, String>>()
             });
 
-        if response.status_code.to_string().starts_with('4') || bytes_uploaded.is_none() {
+        if response.status_code.to_string().starts_with('4') {
             return Err(Error::NotFoundError);
         }
-
-        let bytes_uploaded = bytes_uploaded.unwrap().parse()?;
 
         Ok(UploadInfo {
             bytes_uploaded,
@@ -139,12 +104,31 @@ impl<'a> Client<'a> {
         })
     }
 
-    /// Upload a file to the specified upload URL.
+    /// Uploads a file to a given URL using the default chunk size.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The URL to upload the file to.
+    /// * `path` - The path of the file to be uploaded.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` which is `Ok` if the file is successfully uploaded, otherwise `Err`.
     pub fn upload(&self, url: &str, path: &Path) -> Result<(), Error> {
         self.upload_with_chunk_size(url, path, DEFAULT_CHUNK_SIZE)
     }
 
-    /// Upload a file to the specified upload URL with the given chunk size.
+    /// Uploads a file to a given URL in chunks of a specified size.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The URL to upload the file to.
+    /// * `path` - The path of the file to be uploaded.
+    /// * `chunk_size` - The size of each chunk to be uploaded.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` which is `Ok` if the file is successfully uploaded, otherwise `Err`.
     pub fn upload_with_chunk_size(
         &self,
         url: &str,
@@ -167,11 +151,14 @@ impl<'a> Client<'a> {
 
         reader.seek(SeekFrom::Start(progress as u64))?;
 
+        let mut chunk_index = 0;
         loop {
             let bytes_read = reader.read(&mut buffer)?;
             if bytes_read == 0 {
                 return Err(Error::FileReadError);
             }
+
+            print!("upload: chunk index: {}, ", chunk_index);
 
             let req = self.create_request(
                 HttpMethod::Patch,
@@ -204,12 +191,22 @@ impl<'a> Client<'a> {
             if progress >= file_len as usize {
                 break;
             }
+
+            chunk_index += 1;
         }
 
         Ok(())
     }
 
-    /// Get information about the tus server
+    /// Retrieves information about the server's Tus capabilities.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The URL of the Tus server.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` which is `Ok` if the server information is successfully retrieved, otherwise `Err`.    
     pub fn get_server_info(&self, url: &str) -> Result<ServerInfo, Error> {
         let req = self.create_request(HttpMethod::Options, url, None, None);
 
@@ -219,23 +216,23 @@ impl<'a> Client<'a> {
             return Err(Error::UnexpectedStatusCode(response.status_code));
         }
 
-        let supported_versions: Vec<String> = response
+        let supported_versions = response
             .headers
             .get_by_key(headers::TUS_VERSION)
-            .unwrap()
+            .ok_or_else(|| Error::MissingHeader(headers::TUS_VERSION.to_owned()))?
             .split(',')
             .map(String::from)
-            .collect();
-        let extensions: Vec<TusExtension> =
-            if let Some(ext) = response.headers.get_by_key(headers::TUS_EXTENSION) {
+            .collect::<Vec<String>>();
+
+        let extensions = response
+            .headers
+            .get_by_key(headers::TUS_EXTENSION)
+            .map_or_else(Vec::new, |ext| {
                 ext.split(',')
-                    .map(str::parse)
-                    .filter(Result::is_ok)
-                    .map(Result::unwrap)
-                    .collect()
-            } else {
-                Vec::new()
-            };
+                    .filter_map(|e| e.parse().ok())
+                    .collect::<Vec<TusExtension>>()
+            });
+
         let max_upload_size = response
             .headers
             .get_by_key(headers::TUS_MAX_SIZE)
@@ -253,7 +250,17 @@ impl<'a> Client<'a> {
         self.create_with_metadata(url, path, HashMap::new())
     }
 
-    /// Create a file on the server including the specified metadata, receiving the upload URL of the file.
+    /// Creates a new upload with metadata on the Tus server.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The URL of the Tus server.
+    /// * `path` - The path of the file to be uploaded.
+    /// * `metadata` - A map of metadata to be associated with the upload.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` which is `Ok` if the upload is successfully created, otherwise `Err`.
     pub fn create_with_metadata(
         &self,
         url: &str,
@@ -286,13 +293,12 @@ impl<'a> Client<'a> {
             return Err(Error::UnexpectedStatusCode(response.status_code));
         }
 
-        let location = response.headers.get_by_key(headers::LOCATION);
+        let location = response
+            .headers
+            .get_by_key(headers::LOCATION)
+            .ok_or_else(|| Error::MissingHeader(headers::LOCATION.to_owned()))?;
 
-        if location.is_none() {
-            return Err(Error::MissingHeader(headers::LOCATION.to_owned()));
-        }
-
-        Ok(location.unwrap().to_owned())
+        Ok(location.to_owned())
     }
 
     /// Delete a file on the server.
@@ -308,6 +314,18 @@ impl<'a> Client<'a> {
         Ok(())
     }
 
+    /// Creates an HTTP request with the specified method, URL, body, and headers.
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - The HTTP method for the request.
+    /// * `url` - The URL for the request.
+    /// * `body` - The body of the request as a byte slice.
+    /// * `headers` - The headers for the request.
+    ///
+    /// # Returns
+    ///
+    /// An `HttpRequest` object representing the created request.
     fn create_request<'b>(
         &self,
         method: HttpMethod,
@@ -319,7 +337,7 @@ impl<'a> Client<'a> {
 
         if let Some(auth_token) = &self.auth_token {
             headers.insert("Authorization".to_owned(), format!("Bearer {}", auth_token));
-            println!("{}", format!("Bearer {}", auth_token));
+            //println!("{}", format!("Bearer {}", auth_token));
         }
 
         let method = if self.use_method_override {
@@ -418,6 +436,10 @@ pub enum Error {
     HttpHandlerError(String),
 }
 
+/// Implements the `Display` trait for the `Error` enum.
+///
+/// This provides a human-readable description of the error, which can be used for error messages, logging, etc.
+/// Each variant of the `Error` enum is mapped to a descriptive string.
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> Result<(), std::fmt::Error> {
         let message = match self {
@@ -465,6 +487,15 @@ impl HeaderMap for HashMap<String, String> {
     }
 }
 
+/// Creates HTTP headers for an upload request, including the current progress.
+///
+/// # Arguments
+///
+/// * `progress` - The current progress of the upload.
+///
+/// # Returns
+///
+/// A `Headers` object containing the created headers.
 fn create_upload_headers(progress: usize) -> Headers {
     let mut headers = default_headers();
     headers.insert(

@@ -8,6 +8,7 @@ my-secret.yaml
 */temp/
 */archive/
 */path/
+/misc/
 
 # Rust build artifacts
 Cargo.toml.orig
