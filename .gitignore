@@ -5,9 +5,10 @@ my-secret.yaml
 # Rust target directory
 */target/
 
-*/temp/to/transcode/*
-*/archive/
 */path/to/file/*
+*/temp/to/transcode/*
+
+*/archive/
 /misc/
 
 # Rust build artifacts
