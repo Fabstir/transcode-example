@@ -5,6 +5,8 @@ my-secret.yaml
 # Rust target directory
 */target/
 
+*/path/to/file/*
+*/temp/to/transcode/*
 
 */archive/
 /misc/
