@@ -184,26 +184,33 @@ async fn transcode_task_receiver(
             .with_extension("")
             .file_stem()
             .and_then(|s| s.to_str())
-            .ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid source CID")
-            })
-            .unwrap()
-            .to_string();
+            .map(|s| s.to_string());
 
-        // First, we download the video and save it locally
-        let portal_url = if is_encrypted {
-            var("PORTAL_ENCRYPT_URL").unwrap()
+        if source_cid.is_none() {
+            eprintln!("Invalid source CID: {}", orig_source_cid);
+            continue;
+        }
+
+        let source_cid = source_cid.unwrap();
+
+        let portal_url_result = if is_encrypted {
+            var("PORTAL_ENCRYPT_URL")
         } else {
-            var("PORTAL_URL").unwrap()
+            var("PORTAL_URL")
         };
 
-        //        let test_source_cid: &str = "urqYSH2i-rVUD1F-aUZDJ1Oh8BrzqsXhJPJ58QXDxxSQJD0isRsz0lC2jm-4uZ_Pi93mmoxW3ZYLzcJ55UnQxvuCeCa0AAAAAJh8GPLdBfbDGEp11IM4f7tTgklU60suWg2nMlScJJ9ogDcv5Dw";
+        let portal_url = match portal_url_result {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("Required environment variable for PORTAL_URL not found");
+                continue; // Skip the rest of this loop iteration
+            }
+        };
+
         println!("source_cid: {}", source_cid);
         println!("portal_url: {}", portal_url);
 
         let file_path;
-
-        println!("is_encrypted: {}", is_encrypted);
 
         if is_encrypted {
             println!("source_cid: {}", source_cid);
@@ -282,11 +289,10 @@ async fn transcode_task_receiver(
                 0,
                 last_index_size,
             ) {
-                Ok(bytes) => {
-                    println!("Decryption succeeded");
-                }
+                Ok(_) => println!("Decryption succeeded"),
                 Err(error) => {
                     eprintln!("Decryption error: {:?}", error);
+                    continue;
                 }
             }
         } else {
@@ -317,37 +323,45 @@ async fn transcode_task_receiver(
         // Then, we transcode the downloaded video with each video format
         let mut transcoded_formats = Vec::new();
         for video_format in media_formats_vec {
-            let video_format = serde_json::to_string(&video_format)
-                .expect("Failed to convert JSON value to string");
+            let video_format_str = match serde_json::to_string(&video_format) {
+                Ok(str) => str,
+                Err(e) => {
+                    eprintln!("Error serializing video format: {:?}", e);
+                    continue;
+                }
+            };
+
             let transcode_result =
-                transcode_video(&file_path, &video_format, is_encrypted, is_gpu).await;
+                transcode_video(&file_path, &video_format_str, is_encrypted, is_gpu).await;
 
-            // Handle potential errors
-            if let Err(e) = &transcode_result {
-                eprintln!("Failed to transcode {}: {}", &file_path, e);
-            } else {
-                // Unwrap the successful result
-                let transcode_response = transcode_result.unwrap();
-                let response = transcode_response.into_inner();
+            match transcode_result {
+                Ok(transcode_response) => {
+                    // Handle the successful response
+                    let response = transcode_response.into_inner();
+                    println!(
+                        "Response: status_code: {}, message: {}, cid: {}",
+                        response.status_code, response.message, response.cid
+                    );
 
-                println!(
-                    "Response: status_code: {}, message: {}, cid: {}",
-                    response.status_code, response.message, response.cid
-                );
-
-                let mut video_format: Value =
-                    serde_json::from_str(&video_format).expect("Failed to parse video format");
-                video_format["cid"] = json!(response.cid);
-
-                transcoded_formats.push(video_format.clone());
+                    let mut video_format_modified = video_format;
+                    video_format_modified["cid"] = json!(response.cid);
+                    transcoded_formats.push(video_format_modified);
+                }
+                Err(e) => {
+                    // Log the error and continue with the next format
+                    eprintln!("Error transcoding video: {:?}", e);
+                    continue;
+                }
             }
         }
 
-        let transcoded_json = serde_json::to_string(&transcoded_formats)
-            .expect("Failed to convert transcoded formats to JSON");
+        let transcoded_json = serde_json::to_string(&transcoded_formats).unwrap_or_else(|e| {
+            eprintln!("Error serializing transcoded formats: {:?}", e);
+            "".to_string()
+        });
 
         let mut transcoded = TRANSCODED.lock().await;
-        transcoded.insert(source_cid.clone(), transcoded_json);
+        transcoded.insert(source_cid, transcoded_json);
     }
 }
 
