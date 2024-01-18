@@ -261,7 +261,7 @@ async fn transcode_task_receiver(
                 Err(e) => eprintln!("Download and concatenation failed: {}", e),
             }
 
-            file_path = format!("{}_ue", file_path_encrypted);
+            file_path = format!("{}_", file_path_encrypted);
 
             let file_encrypted_size = get_file_size(file_path_encrypted.clone()).unwrap();
             println!("file_path_encrypted: {}", file_path_encrypted);

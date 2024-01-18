@@ -77,7 +77,18 @@ pub async fn transcode_video(
         .to_string_lossy()
         .to_string();
 
-    let file_name = sanitize(&unsanitized_file_name);
+    let format: VideoFormat = serde_json::from_str::<VideoFormat>(video_format).map_err(|err| {
+        Status::new(
+            Code::InvalidArgument,
+            format!("Invalid video format: {}", err),
+        )
+    })?;
+
+    let file_name = format!(
+        "{}_{}",
+        sanitize(&unsanitized_file_name),
+        format.id.to_string()
+    );
 
     println!("Transcoding video: {}", &file_path);
     println!("is_gpu = {}", &is_gpu);
@@ -85,13 +96,6 @@ pub async fn transcode_video(
     let mut encryption_key1: Vec<u8> = Vec::new();
 
     let mut response: TranscodeResponse;
-
-    let format: VideoFormat = serde_json::from_str::<VideoFormat>(video_format).map_err(|err| {
-        Status::new(
-            Code::InvalidArgument,
-            format!("Invalid video format: {}", err),
-        )
-    })?;
 
     let mut cmd = Command::new("ffmpeg");
 
