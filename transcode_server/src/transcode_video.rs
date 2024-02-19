@@ -8,6 +8,7 @@ use crate::utils::{
 };
 use base64::{engine::general_purpose, DecodeError, Engine as _};
 use dotenv::var;
+use once_cell::sync::Lazy;
 use sanitize_filename::sanitize;
 use serde::Deserialize;
 use serde_json;
@@ -19,16 +20,21 @@ use tokio::io::AsyncReadExt;
 use tonic::{transport::Server, Code, Request, Response, Status};
 use transcode::TranscodeResponse;
 
-static PATH_TO_FILE: &str = "path/to/file/";
+static PATH_TO_FILE: Lazy<String> =
+    Lazy::new(|| var("PATH_TO_FILE").unwrap_or_else(|_| panic!("PATH_TO_FILE not set in .env")));
+static PATH_TO_TRANSCODED_FILE: Lazy<String> = Lazy::new(|| {
+    var("PATH_TO_TRANSCODED_FILE")
+        .unwrap_or_else(|_| panic!("PATH_TO_TRANSCODED_FILE not set in .env"))
+});
 
 pub mod transcode {
     tonic::include_proto!("transcode");
 }
 
 #[derive(Debug, Deserialize)]
-struct VideoFormat {
-    id: u32,
-    ext: String,
+pub struct VideoFormat {
+    pub id: u32,
+    pub ext: String,
     vcodec: Option<String>,
     acodec: Option<String>,
     preset: Option<String>,
@@ -42,12 +48,22 @@ struct VideoFormat {
     bufsize: Option<String>,
     gpu: Option<bool>,
     compression_level: Option<u8>,
+    pub dest: Option<String>,
 }
 
 fn add_arg(cmd: &mut Command, arg: &str, value: Option<&str>) {
     if let Some(value) = value {
         cmd.arg(arg).arg(value);
     }
+}
+
+pub fn get_video_format_from_str(video_format: &str) -> Result<VideoFormat, Status> {
+    serde_json::from_str::<VideoFormat>(video_format).map_err(|err| {
+        Status::new(
+            Code::InvalidArgument,
+            format!("Invalid video format: {}", err),
+        )
+    })
 }
 
 /// Transcodes the video at the specified `input_path` using ffmpeg
@@ -71,24 +87,15 @@ pub async fn transcode_video(
     println!("transcode_video: is_encrypted: {}", is_encrypted);
     println!("transcode_video: is_gpu: {}", is_gpu);
 
-    let unsanitized_file_name = Path::new(file_path)
+    let file_name = Path::new(file_path)
         .file_name()
         .ok_or_else(|| Status::new(Code::InvalidArgument, "Invalid file path"))?
         .to_string_lossy()
         .to_string();
 
-    let format: VideoFormat = serde_json::from_str::<VideoFormat>(video_format).map_err(|err| {
-        Status::new(
-            Code::InvalidArgument,
-            format!("Invalid video format: {}", err),
-        )
-    })?;
+    let format = get_video_format_from_str(video_format)?;
 
-    let file_name = format!(
-        "{}_{}",
-        sanitize(&unsanitized_file_name),
-        format.id.to_string()
-    );
+    let file_name = format!("{}_{}", file_name, format.id.to_string());
 
     println!("Transcoding video: {}", &file_path);
     println!("is_gpu = {}", &is_gpu);
@@ -126,7 +133,11 @@ pub async fn transcode_video(
 
         cmd.args([
             "-y",
-            format!("./temp/to/transcode/{}_ue.{}", file_name, format.ext).as_str(),
+            format!(
+                "{}{}_ue.{}",
+                *PATH_TO_TRANSCODED_FILE, file_name, format.ext
+            )
+            .as_str(),
         ]);
     } else {
         println!("CPU transcoding");
@@ -148,8 +159,8 @@ pub async fn transcode_video(
                     &mut cmd,
                     "-y",
                     Some(&format!(
-                        "./temp/to/transcode/{}_ue.{}",
-                        file_name, format.ext
+                        "{}{}_ue.{}",
+                        *PATH_TO_TRANSCODED_FILE, file_name, format.ext
                     )),
                 );
             } else {
@@ -179,8 +190,8 @@ pub async fn transcode_video(
                     &mut cmd,
                     "-y",
                     Some(&format!(
-                        "./temp/to/transcode/{}_ue.{}",
-                        file_name, format.ext
+                        "{}{}_ue.{}",
+                        *PATH_TO_TRANSCODED_FILE, file_name, format.ext
                     )),
                 );
             } else {
@@ -201,8 +212,11 @@ pub async fn transcode_video(
 
     if is_encrypted {
         match encrypt_file_xchacha20(
-            format!("./temp/to/transcode/{}_ue.{}", file_name, format.ext),
-            format!("./temp/to/transcode/{}.{}", file_name, format.ext),
+            format!(
+                "{}{}_ue.{}",
+                *PATH_TO_TRANSCODED_FILE, file_name, format.ext
+            ),
+            format!("{}{}.{}", *PATH_TO_TRANSCODED_FILE, file_name, format.ext),
             0,
         ) {
             Ok(bytes) => {
@@ -219,8 +233,12 @@ pub async fn transcode_video(
             }
         }
 
-        let file_path = format!("./temp/to/transcode/{}_ue.{}", file_name, format.ext);
-        let file_path_encrypted = format!("./temp/to/transcode/{}.{}", file_name, format.ext);
+        let file_path = format!(
+            "{}{}_ue.{}",
+            *PATH_TO_TRANSCODED_FILE, file_name, format.ext
+        );
+        let file_path_encrypted =
+            format!("{}{}.{}", *PATH_TO_TRANSCODED_FILE, file_name, format.ext);
 
         let hash_result = hash_blake3_file(file_path.clone());
         let hash_result_encrypted = hash_blake3_file(file_path_encrypted.to_owned());
@@ -231,7 +249,7 @@ pub async fn transcode_video(
         let padding: u32 = 0; // replace with your actual padding
 
         // Upload the transcoded videos to storage
-        match upload_video(file_path_encrypted.as_str()) {
+        match upload_video(file_path_encrypted.as_str(), format.dest).await {
             Ok(cid_encrypted) => {
                 println!(
                     "****************************************** cid: {:?}",
@@ -344,12 +362,14 @@ pub async fn transcode_video(
             }
         };
     } else {
-        let file_path = format!("./temp/to/transcode/{}_ue.{}", file_name, format.ext);
+        let file_path = format!(
+            "{}{}_ue.{}",
+            *PATH_TO_TRANSCODED_FILE, file_name, format.ext
+        );
 
         // Upload the transcoded videos to storage
-        match upload_video(file_path.as_str()) {
-            Ok(cid_bytes) => {
-                let cid = format!("u{}", bytes_to_base64url(&cid_bytes));
+        match upload_video(file_path.as_str(), format.dest.clone()).await {
+            Ok(cid) => {
                 println!("cid: {:?}", cid);
 
                 println!("Transcoding task finished");

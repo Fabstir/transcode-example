@@ -74,15 +74,10 @@ pub fn hash_bytes_to_cid(hash: Vec<u8>, file_size: u64) -> Vec<u8> {
 ///
 /// * `url` - The URL of the video to download.
 ///
-pub async fn download_video(url: &str) -> Result<String, Status> {
+pub async fn download_video(url: &str, file_path: &str) -> Result<(), Status> {
     println!(" {}", url);
 
-    let file_name = sanitize(url);
-
-    let path_to_file = var("PATH_TO_FILE").unwrap();
-    let file_path = String::from(path_to_file.to_owned() + &file_name);
-
-    match download_file(url, file_path.as_str()) {
+    match download_file(url, file_path) {
         Ok(()) => println!("File downloaded successfully"),
         Err(e) => {
             eprintln!("Error downloading file: {}", e);
@@ -93,7 +88,7 @@ pub async fn download_video(url: &str) -> Result<String, Status> {
         }
     }
 
-    Ok(file_path)
+    Ok(())
 }
 
 pub async fn download_and_concat_files(
@@ -119,7 +114,10 @@ pub async fn download_and_concat_files(
 
             println!("download_and_concat_files part: {}", part);
 
-            let tmp_file_path = download_video(&part).await?;
+            let path_to_file = var("PATH_TO_FILE").unwrap();
+            let tmp_file_path = String::from(path_to_file.to_owned() + &sanitize(part.as_str()));
+
+            download_video(&part, tmp_file_path.as_str()).await?;
 
             let mut downloaded_file = match fs::File::open(&tmp_file_path).await {
                 Ok(file) => file,

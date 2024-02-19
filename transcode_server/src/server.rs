@@ -19,7 +19,7 @@ mod utils;
 use utils::{base64url_to_bytes, bytes_to_base64url, download_and_concat_files, download_video};
 
 mod transcode_video;
-use transcode_video::transcode_video;
+use transcode_video::{get_video_format_from_str, transcode_video};
 
 use tonic::{transport::Server, Request, Response, Status};
 use warp::Filter;
@@ -56,6 +56,23 @@ use std::convert::TryInto;
 use dotenv::{dotenv, var};
 
 static TRANSCODED: Lazy<Mutex<HashMap<String, String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static PATH_TO_FILE: Lazy<String> =
+    Lazy::new(|| var("PATH_TO_FILE").unwrap_or_else(|_| panic!("PATH_TO_FILE not set in .env")));
+static PATH_TO_TRANSCODED_FILE: Lazy<String> = Lazy::new(|| {
+    var("PATH_TO_TRANSCODED_FILE")
+        .unwrap_or_else(|_| panic!("PATH_TO_TRANSCODED_FILE not set in .env"))
+});
+static FILE_SIZE_THRESHOLD: Lazy<String> = Lazy::new(|| {
+    var("FILE_SIZE_THRESHOLD").unwrap_or_else(|_| panic!("FILE_SIZE_THRESHOLD not set in .env"))
+});
+static TRANSCODED_FILE_SIZE_THRESHOLD: Lazy<String> = Lazy::new(|| {
+    var("TRANSCODED_FILE_SIZE_THRESHOLD")
+        .unwrap_or_else(|_| panic!("TRANSCODED_FILE_SIZE_THRESHOLD not set in .env"))
+});
+static GARBAGE_COLLECTOR_INTERVAL: Lazy<String> = Lazy::new(|| {
+    var("GARBAGE_COLLECTOR_INTERVAL")
+        .unwrap_or_else(|_| panic!("GARBAGE_COLLECTOR_INTERVAL not set in .env"))
+});
 
 fn get_file_size(file_path: String) -> std::io::Result<u64> {
     let metadata = fs::metadata(file_path)?;
@@ -210,102 +227,109 @@ async fn transcode_task_receiver(
         println!("source_cid: {}", source_cid);
         println!("portal_url: {}", portal_url);
 
-        let file_path;
+        let file_path = format!("{}{}", *PATH_TO_FILE, source_cid);
 
-        if is_encrypted {
-            println!("source_cid: {}", source_cid);
-            //            println!("Encrypted CID: {}", source_cid);
-            // // Extract the BASE64_URL_ENCRYPTED_BLOB_HASH from encrypted CID
-            let base64_url_encrypted_blob_hash = get_base64_url_encrypted_blob_hash(&source_cid)
-                .expect("Failed to get base64 URL encrypted blob hash");
+        if !Path::new(&file_path).exists() {
+            if is_encrypted {
+                println!("source_cid: {}", source_cid);
+                //            println!("Encrypted CID: {}", source_cid);
+                // // Extract the BASE64_URL_ENCRYPTED_BLOB_HASH from encrypted CID
+                let base64_url_encrypted_blob_hash =
+                    get_base64_url_encrypted_blob_hash(&source_cid)
+                        .expect("Failed to get base64 URL encrypted blob hash");
 
-            // // GET https://s5.cx/api/locations/BASE64_URL_ENCRYPTED_BLOB_HASH?types=5,3 to get download urls for your encrypted file
-            let url = format!(
-                "{}{}{}?types=5,3",
-                portal_url, "/api/locations/", base64_url_encrypted_blob_hash
-            );
-            println!("Downloading and then transcoding video from URL: {}", &url);
+                // // GET https://s5.cx/api/locations/BASE64_URL_ENCRYPTED_BLOB_HASH?types=5,3 to get download urls for your encrypted file
+                let url = format!(
+                    "{}{}{}?types=5,3",
+                    portal_url, "/api/locations/", base64_url_encrypted_blob_hash
+                );
+                println!("Downloading and then transcoding video from URL: {}", &url);
 
-            let file_encrypted_metadata = match download_video(&url).await {
-                Ok(file_path) => file_path,
-                Err(e) => {
-                    eprintln!(
-                        "Failed to download encrypted video from URL {}: {}",
-                        &url, e
-                    );
-                    continue;
+                let encrypted_file_path = format!("{}{}_", *PATH_TO_FILE, source_cid);
+
+                match download_video(&url, encrypted_file_path.as_str()).await {
+                    Ok(_) => println!("Video downloaded successfully"),
+                    Err(e) => {
+                        eprintln!(
+                            "Failed to download encrypted video from URL {}: {}",
+                            &url, e
+                        );
+                        continue;
+                    }
+                };
+
+                let encrypted_metadata = match std::fs::read_to_string(&encrypted_file_path) {
+                    Ok(contents) => contents,
+                    Err(e) => {
+                        eprintln!(
+                            "Failed to read encrypted metadata from file {}: {}",
+                            &encrypted_file_path, e
+                        );
+                        continue;
+                    }
+                };
+
+                let file_path_encrypted =
+                    format!("{}{}", *PATH_TO_FILE, generate_random_filename());
+
+                println!("file_encrypted_metadata: {:?}", file_path_encrypted);
+                println!("encrypted_metadata: {:?}", encrypted_metadata);
+
+                // get download urls for your encrypted file
+                // and then just download the encrypted file using any http download library
+                match download_and_concat_files(encrypted_metadata, file_path_encrypted.clone())
+                    .await
+                {
+                    Ok(()) => println!("Download and concatenation succeeded"),
+                    Err(e) => eprintln!("Download and concatenation failed: {}", e),
                 }
-            };
 
-            let encrypted_metadata = match std::fs::read_to_string(&file_encrypted_metadata) {
-                Ok(contents) => contents,
-                Err(e) => {
-                    eprintln!(
-                        "Failed to read encrypted metadata from file {}: {}",
-                        &file_encrypted_metadata, e
-                    );
-                    continue;
+                let file_encrypted_size = get_file_size(file_path_encrypted.clone()).unwrap();
+                println!("file_path_encrypted: {}", file_path_encrypted);
+                println!("file_encrypted_size: {}", file_encrypted_size);
+
+                // last chunk index is floor(encrypted file size / (262144 + 16)) for the default chunk size
+                // iirc padding is 0 in your case
+                let last_index_size =
+                    (file_encrypted_size as f64 / (262144 + 16) as f64).floor() as u32;
+
+                let key = get_key_from_encrypted_cid(&source_cid);
+                let key_bytes = base64url_to_bytes(&key);
+                //let key_bytes = vec![0; 32];
+
+                println!("file_path: {}", file_path);
+                println!("key: {}", key);
+                println!("key_bytes: {:?}", key_bytes);
+                println!("last_index_size: {}", last_index_size);
+
+                // decrypt_file_xchacha20 from vup
+                match decrypt_file_xchacha20(
+                    file_path_encrypted,
+                    file_path.clone(),
+                    key_bytes,
+                    0,
+                    last_index_size,
+                ) {
+                    Ok(_) => println!("Decryption succeeded"),
+                    Err(error) => {
+                        eprintln!("Decryption error: {:?}", error);
+                        continue;
+                    }
                 }
-            };
+            } else {
+                let url = format!("{}{}{}", portal_url, "/s5/blob/", source_cid);
 
-            let path_to_file = var("PATH_TO_FILE").unwrap();
-            let file_path_encrypted = format!("{}{}", path_to_file, generate_random_filename());
-
-            println!("file_encrypted_metadata: {:?}", file_encrypted_metadata);
-            println!("encrypted_metadata: {:?}", encrypted_metadata);
-
-            // get download urls for your encrypted file
-            // and then just download the encrypted file using any http download library
-            match download_and_concat_files(encrypted_metadata, file_path_encrypted.clone()).await {
-                Ok(()) => println!("Download and concatenation succeeded"),
-                Err(e) => eprintln!("Download and concatenation failed: {}", e),
-            }
-
-            file_path = format!("{}_", file_path_encrypted);
-
-            let file_encrypted_size = get_file_size(file_path_encrypted.clone()).unwrap();
-            println!("file_path_encrypted: {}", file_path_encrypted);
-            println!("file_encrypted_size: {}", file_encrypted_size);
-
-            // last chunk index is floor(encrypted file size / (262144 + 16)) for the default chunk size
-            // iirc padding is 0 in your case
-            let last_index_size =
-                (file_encrypted_size as f64 / (262144 + 16) as f64).floor() as u32;
-
-            let key = get_key_from_encrypted_cid(&source_cid);
-            let key_bytes = base64url_to_bytes(&key);
-            //let key_bytes = vec![0; 32];
-
-            println!("file_path: {}", file_path);
-            println!("key: {}", key);
-            println!("key_bytes: {:?}", key_bytes);
-            println!("last_index_size: {}", last_index_size);
-
-            // decrypt_file_xchacha20 from vup
-            match decrypt_file_xchacha20(
-                file_path_encrypted,
-                file_path.clone(),
-                key_bytes,
-                0,
-                last_index_size,
-            ) {
-                Ok(_) => println!("Decryption succeeded"),
-                Err(error) => {
-                    eprintln!("Decryption error: {:?}", error);
-                    continue;
-                }
+                // First, we download the video and save it locally
+                match download_video(&url, file_path.as_str()).await {
+                    Ok(_) => println!("Video downloaded successfully"),
+                    Err(e) => {
+                        eprintln!("Failed to download video from URL {}: {}", &url, e);
+                        continue;
+                    }
+                };
             }
         } else {
-            let url = format!("{}{}{}", portal_url, "/s5/blob/", source_cid);
-
-            // First, we download the video and save it locally
-            file_path = match download_video(&url).await {
-                Ok(file_path) => file_path,
-                Err(e) => {
-                    eprintln!("Failed to download video from URL {}: {}", &url, e);
-                    continue;
-                }
-            };
+            println!("File already exists: {}", &file_path);
         }
 
         let media_formats_file = var("MEDIA_FORMATS_FILE").unwrap();
@@ -331,26 +355,55 @@ async fn transcode_task_receiver(
                 }
             };
 
-            let transcode_result =
-                transcode_video(&file_path, &video_format_str, is_encrypted, is_gpu).await;
-
-            match transcode_result {
-                Ok(transcode_response) => {
-                    // Handle the successful response
-                    let response = transcode_response.into_inner();
-                    println!(
-                        "Response: status_code: {}, message: {}, cid: {}",
-                        response.status_code, response.message, response.cid
-                    );
-
-                    let mut video_format_modified = video_format;
-                    video_format_modified["cid"] = json!(response.cid);
-                    transcoded_formats.push(video_format_modified);
-                }
+            let format_result = get_video_format_from_str(&video_format_str);
+            let format = match format_result {
+                Ok(format) => format,
                 Err(e) => {
-                    // Log the error and continue with the next format
-                    eprintln!("Error transcoding video: {:?}", e);
-                    continue;
+                    eprintln!("Failed to get video format from string: {}", e);
+                    continue; // Skip the rest of this loop iteration
+                }
+            };
+
+            if !check_transcoded_file_exists(
+                file_path.as_str(),
+                &format.id.to_string(),
+                format.ext.as_str(),
+            )
+            .await
+            {
+                let transcode_result: std::prelude::v1::Result<
+                    Response<transcode_video::transcode::TranscodeResponse>,
+                    Status,
+                > = transcode_video(&file_path, &video_format_str, is_encrypted, is_gpu).await;
+
+                match transcode_result {
+                    Ok(transcode_response) => {
+                        // Handle the successful response
+                        let response = transcode_response.into_inner();
+                        println!(
+                            "Response: status_code: {}, message: {}, cid: {}",
+                            response.status_code, response.message, response.cid
+                        );
+
+                        let mut video_format_modified = video_format;
+
+                        match &format.dest {
+                            Some(dest) if dest == "ipfs" => {
+                                video_format_modified["cid"] =
+                                    json!(format!("ipfs://{}", response.cid));
+                            }
+                            _ => {
+                                video_format_modified["cid"] =
+                                    json!(format!("s5://{}", response.cid));
+                            }
+                        }
+                        transcoded_formats.push(video_format_modified);
+                    }
+                    Err(e) => {
+                        // Log the error and continue with the next format
+                        eprintln!("Error transcoding video: {:?}", e);
+                        continue;
+                    }
                 }
             }
         }
@@ -377,7 +430,11 @@ impl TranscodeService for TranscodeServiceHandler {
         &self,
         request: Request<TranscodeRequest>,
     ) -> Result<Response<TranscodeResponse>, Status> {
-        let source_cid = request.get_ref().source_cid.clone();
+        let mut source_cid = request.get_ref().source_cid.clone();
+        if source_cid.starts_with("s5://") {
+            source_cid = source_cid.strip_prefix("s5://").unwrap().to_string();
+        }
+
         println!("Received source_cid: {}", source_cid);
 
         let media_formats = request.get_ref().media_formats.clone();
@@ -417,7 +474,7 @@ impl TranscodeService for TranscodeServiceHandler {
         let response = TranscodeResponse {
             status_code: 200,
             message: "Transcoding task queued".to_string(),
-            cid: source_cid,
+            cid: request.get_ref().source_cid.clone(),
         };
 
         Ok(Response::new(response))
@@ -427,7 +484,10 @@ impl TranscodeService for TranscodeServiceHandler {
         &self,
         request: Request<GetTranscodedRequest>,
     ) -> Result<Response<GetTranscodedResponse>, Status> {
-        let source_cid = request.get_ref().source_cid.clone();
+        let mut source_cid = request.get_ref().source_cid.clone();
+        if source_cid.starts_with("s5://") {
+            source_cid = source_cid.strip_prefix("s5://").unwrap().to_string();
+        }
 
         let transcoded = TRANSCODED.lock().await;
         let metadata = transcoded.get(&source_cid).cloned().ok_or_else(|| {
@@ -555,6 +615,35 @@ impl RestHandler {
     }
 }
 
+async fn check_transcoded_file_exists(cid: &str, label: &str, ext: &str) -> bool {
+    let filename = format!("{}{}_{}.{}", *PATH_TO_TRANSCODED_FILE, cid, label, ext); // Adjust the path and format as needed.
+    Path::new(&filename).exists()
+}
+
+fn garbage_collect(directory: &str, size_threshold: u64) {
+    let mut files: Vec<_> = fs::read_dir(directory)
+        .unwrap()
+        .filter_map(|entry| {
+            entry.ok().and_then(|e| {
+                e.metadata()
+                    .ok()
+                    .map(|m| (e.path(), m.len(), m.created().unwrap()))
+            })
+        })
+        .collect();
+
+    files.sort_by_key(|k| k.2); // Sort files by creation time
+
+    let mut total_size: u64 = files.iter().map(|(_, size, _)| size).sum();
+
+    while total_size > size_threshold && !files.is_empty() {
+        if let Some((file, size, _)) = files.pop() {
+            fs::remove_file(file).unwrap();
+            total_size -= size;
+        }
+    }
+}
+
 pub mod transcode {
     tonic::include_proto!("transcode");
 }
@@ -648,6 +737,43 @@ async fn main() {
 
     let routes = transcode.or(get_transcoded);
     let rest_server = warp::serve(routes).run(([0, 0, 0, 0], 8000));
+
+    let garbage_collection_secs = match GARBAGE_COLLECTOR_INTERVAL.parse::<u64>() {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!("Failed to parse GARBAGE_COLLECTOR_INTERVAL into a u64");
+            return;
+        }
+    };
+
+    // Start the garbage collection task
+    let garbage_collection_interval = std::time::Duration::from_secs(garbage_collection_secs); // Every hour, adjust as needed
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(garbage_collection_interval);
+        loop {
+            interval.tick().await;
+
+            let threshold = match FILE_SIZE_THRESHOLD.parse::<u64>() {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!("Failed to parse FILE_SIZE_THRESHOLD into a u64");
+                    return;
+                }
+            };
+
+            garbage_collect(PATH_TO_FILE.as_str(), threshold);
+
+            let transcoded_threshold = match TRANSCODED_FILE_SIZE_THRESHOLD.parse::<u64>() {
+                Ok(value) => value,
+                Err(_) => {
+                    eprintln!("Failed to parse TRANSCODED_FILE_SIZE_THRESHOLD into a u64");
+                    return;
+                }
+            };
+
+            garbage_collect(PATH_TO_TRANSCODED_FILE.as_str(), transcoded_threshold);
+        }
+    });
 
     // Run both servers concurrently, and print a message when each finishes.
     let grpc_server = tokio::spawn(grpc_server);

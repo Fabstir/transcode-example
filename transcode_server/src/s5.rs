@@ -1,11 +1,23 @@
+use crate::utils;
+
+use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose, Engine as _};
 use dotenv::var;
+use reqwest::multipart;
+use serde_json::Value;
+use std::env;
 use std::fs::File;
 use std::io::copy;
 use std::io::{BufReader, Read};
+use std::process::Command;
 use std::result::Result::{Err, Ok};
+use std::str;
 use std::{collections::HashMap, fs, path::Path};
+use tokio::io::AsyncReadExt;
+use tokio::runtime::Runtime;
 use tus_client::Client;
+
+use utils::bytes_to_base64url;
 
 pub fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Create a new client with default configuration
@@ -21,7 +33,9 @@ pub fn download_file(url: &str, path: &str) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-pub fn upload_video(path: &str) -> Result<Vec<u8>, anyhow::Error> {
+pub async fn upload_video_s5(path: &str) -> Result<String, anyhow::Error> {
+    println!("upload_video_s5: path: {:?}", path);
+
     let portal_url = var("PORTAL_URL").unwrap();
     let token = var("TOKEN").unwrap();
 
@@ -43,8 +57,8 @@ pub fn upload_video(path: &str) -> Result<Vec<u8>, anyhow::Error> {
 
     println!("{}", metadata.get("hash").unwrap());
 
-    let cid = hash_to_cid(metadata.get("hash").unwrap(), file_size);
-    println!("cid = {:?}", cid);
+    let cid_bytes = hash_to_cid(metadata.get("hash").unwrap(), file_size);
+    println!("cid = {:?}", cid_bytes);
     println!("path = {}", &path.display());
     println!("portal_url = {}", &portal_url);
     println!("metadata = {:?}", metadata);
@@ -68,7 +82,65 @@ pub fn upload_video(path: &str) -> Result<Vec<u8>, anyhow::Error> {
         Err(e) => eprintln!("Failed to upload file to server: {}", e),
     }
 
+    println!("upload_video_s5: cid: {:?}", cid_bytes);
+
+    let cid = format!("u{}", bytes_to_base64url(&cid_bytes));
     Ok(cid)
+}
+
+pub async fn upload_video_ipfs(path: &str) -> Result<String, anyhow::Error> {
+    let pinata_jwt = std::env::var("PINATA_JWT")
+        .map_err(|_| anyhow!("PINATA_JWT environment variable not set"))?;
+
+    // Using `curl` to upload the file
+    let output = Command::new("curl")
+        .arg("-X")
+        .arg("POST")
+        .arg("--header")
+        .arg(format!("Authorization: Bearer {}", pinata_jwt))
+        .arg("--form")
+        .arg(format!("file=@{}", path))
+        .arg("https://api.pinata.cloud/pinning/pinFileToIPFS")
+        .output()
+        .map_err(|e| anyhow!("Failed to execute curl command: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = str::from_utf8(&output.stderr).unwrap_or("Failed to read stderr");
+        return Err(anyhow!("curl command failed: {}", stderr));
+    }
+
+    let response_body = str::from_utf8(&output.stdout)
+        .map_err(|_| anyhow!("Failed to read curl command output"))?;
+
+    // Debugging: Print the response body
+    println!("Curl response body: {}", response_body);
+
+    let response_json: Value = serde_json::from_str(response_body)
+        .map_err(|_| anyhow!("Failed to parse JSON response from Pinata"))?;
+
+    let cid_bytes = response_json["IpfsHash"]
+        .as_str()
+        .ok_or_else(|| anyhow!("IPFS hash not found in response"))?
+        .as_bytes()
+        .to_vec();
+
+    let cid = String::from_utf8(cid_bytes)
+        .map_err(|_| anyhow!("Failed to convert CID bytes to string"))?;
+
+    // Debugging: Print the CID
+    println!("Extracted CID: {}", cid);
+
+    Ok(cid)
+}
+
+pub async fn upload_video(
+    path: &str,
+    storage_network: Option<String>,
+) -> Result<String, anyhow::Error> {
+    match storage_network.as_deref() {
+        Some("ipfs") => upload_video_ipfs(path).await,
+        _ => upload_video_s5(path).await,
+    }
 }
 
 pub fn hash_blake3_file(path: String) -> Result<blake3::Hash, anyhow::Error> {

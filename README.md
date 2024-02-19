@@ -87,6 +87,7 @@ use port: 50051
           b_v: "4.5M",
           ar: "44k",
           gpu: true,
+          dest: "s5",
         },
         {
           id: 34,
@@ -101,6 +102,7 @@ use port: 50051
           b_v: '18M',
           ar: '48k',
           gpu: true,
+          dest: "ipfs",
         },
       ];
 
@@ -147,3 +149,31 @@ try {
 ```
 
 For example React program code that uses transcoder, go [here](https://github.com/Fabstir/upload-play-audio-example)
+
+# Media format properties
+
+The two previous sections show example JSON files that specify the transcoded media formats to output from a source file. These are the JSON file object properties currently supported (some have a direct one-to-one relationship with ffmpeg):
+id: u32,
+ext: String,
+vcodec: Option&lt;String&gt;,
+acodec: Option&lt;String&gt;,
+preset: Option&lt;String&gt;,
+profile: Option&lt;String&gt;,
+ch: Option<u8>,
+vf: Option<String>,
+b_v: Option<String>,
+ar: Option<String>,
+minrate: &lt;String&gt;,
+maxrate: &lt;String&gt;,
+bufsize: &lt;String&gt;,
+gpu: Option<bool>,
+compression_level: &lt;Option<u8>&gt;,
+dest: &lt;String&gt;,
+
+Note that `dest` can be specfied for each output format type as either "s5" for uploading transcoded files to Sia via S5, "ipfs" for InterPlanetary File System or missed out from the JSON file where it will default to s5.
+
+# Caching
+
+The transcoder now checks to see if a source media file has already been downloaded. If so and it is still available in its cache area, it will not download again but use the local version. Similarly, if a file for a specific media format has already been transcoded and is still available in the cache area, then transcoding of the source media file for that particular format will be skipped and the local version uploaded instead.
+
+In the `.env` file, set FILE_SIZE_THRESHOLD and TRANSCODED_FILE_SIZE_THRESHOLD to the size in bytes, above which files in the cache get deleted; starting from oldest file first. GARBAGE_COLLECTOR_INTERVAL is the polling frequency in seconds for how often these thresholds are checked.
