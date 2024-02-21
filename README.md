@@ -22,6 +22,18 @@ https://github.com/s5-dev
 
 Sia is a decentralized cloud storage platform that uses blockchain technology to store data https://sia.tech/. It is designed to be more secure, reliable, and affordable than traditional cloud storage providers. Sia encrypts and distributes your files across a decentralized network of hosts. This means that your data is not stored in a single location, and it is not accessible to anyone who does not have the encryption key.
 
+# Overall workflow
+
+![Fabstir Transcoder Workflow](https://fabstir.com/img2/Fabstir_transcoder_workflow.svg)
+
+The user submits a POST request to the trancode RESTful API, including a payload with the `cid` (content identifier) and an array of media formats to transcode to. The transcoder supports two storage solutions for the transcoded videos: Sia via the S5 content-addressed storage layer and IPFS. The user can choose whether to encrypt the transcoded videos and whether to use GPUs or CPUs for transcoding.
+
+Upon receiving the request, the transcoder server responds with a JSON message, including a `status_code` and a `task_id`. The `status_code` indicates whether the transcoder received the request, and the `task_id` is a unique identifier for the transcoding request. _Note that the `task_id`, is currently the `cid` but it will be changed to a unique identifier in the next version of the transcoder._
+
+The transcoder server then transcodes the source video into each of the specified formats and uploads the transcoded videos to the specified storage solution.
+
+The user can query the status of the transcoding job by calling the `get_transcoded` RESTful API endpoint with the `task_id` as a parameter. If the transcoding job has not finished, the user receives an error message. If the transcoding job has finished, the user receives an array of JSON objects, including the `media_formats` array with an additional `src` property that gives the `cid` of the video, prefixed with either `s5://` or `ipfs://` to indicate the storage location.
+
 # To get started
 
 ```
