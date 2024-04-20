@@ -12,7 +12,7 @@ message TranscodeRequest {
 message TranscodeResponse {
     int32 status_code = 1;
     string message = 2;
-    string cid = 3;
+    string task_id = 3;
 }
 
 service TranscodeService {
@@ -22,10 +22,11 @@ service TranscodeService {
 }
 
 message GetTranscodedRequest {
-    string source_cid = 1;
+    string task_id = 1;
 }
 
 message GetTranscodedResponse {
     int32 status_code = 1;
     string metadata = 2;
+    int32 progress = 3;
 }

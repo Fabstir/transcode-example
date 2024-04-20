@@ -19,7 +19,9 @@ mod utils;
 use utils::{base64url_to_bytes, bytes_to_base64url, download_and_concat_files, download_video};
 
 mod transcode_video;
-use transcode_video::{get_video_format_from_str, transcode_video};
+use transcode_video::{get_video_format_from_str, transcode_video, TranscodeVideoResponse};
+
+mod shared;
 
 use tonic::{transport::Server, Request, Response, Status};
 use warp::Filter;
@@ -138,14 +140,12 @@ fn number_of_bytes(value: u32) -> usize {
     bytes
 }
 
-/// Calculates the SHA-256 hash of the given `blob` and encrypts it using the
-/// `key` using AES-256-CBC encryption. The resulting encrypted hash is then
-/// base64-encoded and URL-safe. Returns the resulting hash as a `String`.
+/// Calculates the SHA-256 hash of the given `encrypted_cid`, encrypts it using AES-256-CBC with
+/// the specified `key`, and then encodes the result as a URL-safe base64 string. This function is
+/// designed for securing sensitive identifiers before storage or transmission.
 ///
 /// # Arguments
-///
-/// * `blob` - The blob to hash and encrypt.
-/// * `key` - The encryption key to use.
+/// * `encrypted_cid` - The content identifier to be hashed, encrypted, and encoded.
 ///
 pub fn get_base64_url_encrypted_blob_hash(encrypted_cid: &str) -> Option<String> {
     let encrypted_cid = &encrypted_cid[1..];
@@ -178,23 +178,20 @@ fn generate_random_filename() -> String {
     format!("{}_{}", uuid, timestamp)
 }
 
-/// Receives transcoding tasks from the `transcode_task_sender` channel and
-/// processes them. For each task, it reads the input file from disk, transcodes
-/// it using the specified `transcoder`, and writes the output file to disk.
-/// If an error occurs during any of these steps, it logs the error and continues
-/// processing the next task. Once all tasks have been processed, it sends a
-/// message to the `transcode_done_sender` channel to signal that it has finished.
+/// Asynchronously receives transcoding tasks from a channel and processes them using the specified transcoder. Each
+/// task involves reading an input file, transcoding it according to the provided settings, and writing the output to
+/// a specified location. Errors encountered during processing are logged, and upon completion of all tasks, a signal
+/// is sent through another channel to indicate completion.
 ///
 /// # Arguments
-///
-/// * `transcode_task_sender` - The sender channel for transcoding tasks.
-/// * `transcode_done_sender` - The sender channel for the "transcoding done" message.
-/// * `transcoder` - The transcoder to use for transcoding the input files.
+/// * `receiver` - An `Arc<Mutex<mpsc::Receiver<(String, String, String, bool, bool)>>>` representing a shared receiver
+///   channel for transcoding tasks. Each task includes the input file path, output file path, desired format,
+///   encryption flag, and GPU usage flag.
 ///
 async fn transcode_task_receiver(
-    receiver: Arc<Mutex<mpsc::Receiver<(String, String, bool, bool)>>>,
+    receiver: Arc<Mutex<mpsc::Receiver<(String, String, String, bool, bool)>>>,
 ) {
-    while let Some((orig_source_cid, media_formats, is_encrypted, is_gpu)) =
+    while let Some((task_id, orig_source_cid, media_formats, is_encrypted, is_gpu)) =
         receiver.lock().await.recv().await
     {
         let source_cid = Path::new(&orig_source_cid)
@@ -346,7 +343,7 @@ async fn transcode_task_receiver(
 
         // Then, we transcode the downloaded video with each video format
         let mut transcoded_formats = Vec::new();
-        for video_format in media_formats_vec {
+        for (index, video_format) in media_formats_vec.iter().enumerate() {
             let video_format_str = match serde_json::to_string(&video_format) {
                 Ok(str) => str,
                 Err(e) => {
@@ -372,20 +369,35 @@ async fn transcode_task_receiver(
             .await
             {
                 let transcode_result: std::prelude::v1::Result<
-                    Response<transcode_video::transcode::TranscodeResponse>,
+                    Response<TranscodeVideoResponse>,
                     Status,
-                > = transcode_video(&file_path, &video_format_str, is_encrypted, is_gpu).await;
+                > = transcode_video(
+                    task_id.clone(),
+                    index,
+                    &file_path,
+                    &video_format_str,
+                    is_encrypted,
+                    is_gpu,
+                )
+                .await;
+
+                let current_progress = shared::calculate_overall_progress(&task_id);
+                println!(
+                    "Current Overall Progress for task {}: {}%",
+                    task_id, current_progress
+                );
 
                 match transcode_result {
-                    Ok(transcode_response) => {
+                    Ok(transcode_video_response) => {
                         // Handle the successful response
-                        let response = transcode_response.into_inner();
+                        let response = transcode_video_response.into_inner();
                         println!(
                             "Response: status_code: {}, message: {}, cid: {}",
                             response.status_code, response.message, response.cid
                         );
 
-                        let mut video_format_modified = video_format;
+                        // Create a mutable clone of video_format
+                        let mut video_format_modified = video_format.clone();
 
                         match &format.dest {
                             Some(dest) if dest == "ipfs" => {
@@ -414,14 +426,14 @@ async fn transcode_task_receiver(
         });
 
         let mut transcoded = TRANSCODED.lock().await;
-        transcoded.insert(source_cid, transcoded_json);
+        transcoded.insert(task_id, transcoded_json);
     }
 }
 
 // The gRPC service implementation
 #[derive(Debug, Clone)]
 struct TranscodeServiceHandler {
-    transcode_task_sender: Option<Arc<Mutex<mpsc::Sender<(String, String, bool, bool)>>>>,
+    transcode_task_sender: Option<Arc<Mutex<mpsc::Sender<(String, String, String, bool, bool)>>>>,
 }
 
 #[async_trait]
@@ -452,11 +464,13 @@ impl TranscodeService for TranscodeServiceHandler {
         );
 
         // Send the transcoding task to the transcoding task receiver
+        let task_id = Uuid::new_v4();
         if let Some(ref sender) = self.transcode_task_sender {
             let sender = sender.lock().await.clone();
 
             if let Err(e) = sender
                 .send((
+                    task_id.to_string(),
                     source_cid.clone(),
                     media_formats.clone(),
                     is_encrypted,
@@ -474,7 +488,7 @@ impl TranscodeService for TranscodeServiceHandler {
         let response = TranscodeResponse {
             status_code: 200,
             message: "Transcoding task queued".to_string(),
-            cid: request.get_ref().source_cid.clone(),
+            task_id: task_id.to_string(),
         };
 
         Ok(Response::new(response))
@@ -484,24 +498,21 @@ impl TranscodeService for TranscodeServiceHandler {
         &self,
         request: Request<GetTranscodedRequest>,
     ) -> Result<Response<GetTranscodedResponse>, Status> {
-        let mut source_cid = request.get_ref().source_cid.clone();
-        if source_cid.starts_with("s5://") {
-            source_cid = source_cid.strip_prefix("s5://").unwrap().to_string();
-        }
+        let task_id = &request.get_ref().task_id;
 
         let transcoded = TRANSCODED.lock().await;
-        let metadata = transcoded.get(&source_cid).cloned().ok_or_else(|| {
-            Status::not_found(format!("CID not found for source_cid: {}", source_cid))
-        })?;
+        let metadata = transcoded
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| Status::not_found(format!("CID not found for task_id: {}", task_id)))?;
+
+        let progress = shared::calculate_overall_progress(task_id);
 
         let response = GetTranscodedResponse {
             status_code: 200,
             metadata,
+            progress,
         };
-        println!(
-            "get_transcoded Response: {}, {}",
-            response.status_code, response.metadata
-        );
 
         Ok(Response::new(response))
     }
@@ -522,6 +533,7 @@ impl warp::reject::Reject for TranscodeError {}
 struct TranscodeResponseWrapper {
     status_code: i32,
     message: String,
+    task_id: String,
 }
 
 impl From<transcode::TranscodeResponse> for TranscodeResponseWrapper {
@@ -529,19 +541,22 @@ impl From<transcode::TranscodeResponse> for TranscodeResponseWrapper {
         TranscodeResponseWrapper {
             status_code: response.status_code,
             message: response.message,
+            task_id: response.task_id,
         }
     }
 }
 
-impl From<tokio::sync::mpsc::error::SendError<(String, String, bool, bool)>> for TranscodeError {
-    fn from(e: tokio::sync::mpsc::error::SendError<(String, String, bool, bool)>) -> Self {
+impl From<tokio::sync::mpsc::error::SendError<(String, String, String, bool, bool)>>
+    for TranscodeError
+{
+    fn from(e: tokio::sync::mpsc::error::SendError<(String, String, String, bool, bool)>) -> Self {
         TranscodeError(format!("Failed to send transcoding task: {}", e))
     }
 }
 
 #[derive(Debug, Clone)]
 struct RestHandler {
-    transcode_task_sender: Option<Arc<Mutex<mpsc::Sender<(String, String, bool, bool)>>>>,
+    transcode_task_sender: Option<Arc<Mutex<mpsc::Sender<(String, String, String, bool, bool)>>>>,
 }
 
 impl RestHandler {
@@ -552,11 +567,14 @@ impl RestHandler {
         is_encrypted: bool,
         is_gpu: bool,
     ) -> Result<impl warp::Reply, warp::Rejection> {
+        let task_id = Uuid::new_v4();
+
         if let Some(ref sender) = self.transcode_task_sender {
             let sender = sender.lock().await.clone();
 
             if let Err(e) = sender
                 .send((
+                    task_id.to_string(),
                     source_cid.clone(),
                     media_formats.clone(),
                     is_encrypted,
@@ -571,7 +589,7 @@ impl RestHandler {
         let response = transcode::TranscodeResponse {
             status_code: 200,
             message: "Transcoding task queued".to_string(),
-            cid: source_cid,
+            task_id: task_id.to_string(),
         };
 
         Ok(warp::reply::json(&TranscodeResponseWrapper::from(response)))
@@ -582,6 +600,7 @@ impl RestHandler {
 struct GetTranscodedResponseWrapper {
     status_code: i32,
     metadata: String,
+    progress: i32,
 }
 
 impl From<transcode::GetTranscodedResponse> for GetTranscodedResponseWrapper {
@@ -589,29 +608,30 @@ impl From<transcode::GetTranscodedResponse> for GetTranscodedResponseWrapper {
         GetTranscodedResponseWrapper {
             status_code: response.status_code,
             metadata: response.metadata,
+            progress: response.progress,
         }
     }
 }
 
 impl RestHandler {
-    async fn get_transcoded(
-        &self,
-        source_cid: String,
-    ) -> Result<impl warp::Reply, warp::Rejection> {
+    async fn get_transcoded(&self, task_id: String) -> Result<impl warp::Reply, warp::Rejection> {
+        // Retrieve the metadata and the progress for the given task ID.
         let transcoded = TRANSCODED.lock().await;
         let metadata = transcoded
-            .get(&source_cid)
+            .get(&task_id)
             .cloned()
             .ok_or_else(|| warp::reject::not_found())?;
 
-        let response = GetTranscodedResponse {
+        let progress = shared::calculate_overall_progress(&task_id);
+
+        // Construct the response including the progress
+        let response = GetTranscodedResponseWrapper {
             status_code: 200,
             metadata,
+            progress,
         };
 
-        Ok(warp::reply::json(&GetTranscodedResponseWrapper::from(
-            response,
-        )))
+        Ok(warp::reply::json(&response))
     }
 }
 
@@ -667,7 +687,7 @@ async fn main() {
     dotenv().ok();
 
     // Create a channel for transcoding tasks
-    let (task_sender, task_receiver) = mpsc::channel::<(String, String, bool, bool)>(100);
+    let (task_sender, task_receiver) = mpsc::channel::<(String, String, String, bool, bool)>(100);
     let task_receiver = Arc::new(Mutex::new(task_receiver));
 
     // Start the transcoding task receiver
@@ -728,9 +748,9 @@ async fn main() {
         .boxed();
 
     let get_transcoded = warp::path!("get_transcoded" / String)
-        .and_then(move |source_cid| {
+        .and_then(move |task_id| {
             let rest_handler = rest_handler_get_transcoded.clone();
-            async move { rest_handler.get_transcoded(source_cid).await }
+            async move { rest_handler.get_transcoded(task_id).await }
         })
         .with(cors.clone())
         .boxed();

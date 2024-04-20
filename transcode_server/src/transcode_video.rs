@@ -1,3 +1,5 @@
+use crate::shared;
+
 use crate::encrypt_file::encrypt_file_xchacha20;
 use crate::encrypted_cid::create_encrypted_cid;
 use crate::s5::hash_blake3_file;
@@ -9,16 +11,17 @@ use crate::utils::{
 use base64::{engine::general_purpose, DecodeError, Engine as _};
 use dotenv::var;
 use once_cell::sync::Lazy;
+use regex::Regex;
 use sanitize_filename::sanitize;
 use serde::Deserialize;
 use serde_json;
 use std::error::Error;
 use std::fs::metadata;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tokio::io::AsyncReadExt;
 use tonic::{transport::Server, Code, Request, Response, Status};
-use transcode::TranscodeResponse;
 
 static PATH_TO_FILE: Lazy<String> =
     Lazy::new(|| var("PATH_TO_FILE").unwrap_or_else(|_| panic!("PATH_TO_FILE not set in .env")));
@@ -29,6 +32,13 @@ static PATH_TO_TRANSCODED_FILE: Lazy<String> = Lazy::new(|| {
 
 pub mod transcode {
     tonic::include_proto!("transcode");
+}
+
+#[derive(Debug, Clone)]
+pub struct TranscodeVideoResponse {
+    pub status_code: i32,
+    pub message: String,
+    pub cid: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,45 +76,99 @@ pub fn get_video_format_from_str(video_format: &str) -> Result<VideoFormat, Stat
     })
 }
 
-/// Transcodes the video at the specified `input_path` using ffmpeg
-/// and saves the resulting output to the specified `output_path`.
-/// Returns the path to the transcoded video as a `String`.
+/// Gets video duration in seconds using `ffprobe`.
 ///
 /// # Arguments
+/// * `file_path`: Path to the video file.
 ///
-/// * `input_path` - The path to the input video file.
-/// * `output_path` - The path to save the transcoded video file.
-/// * `transcoder` - The transcoder to use for transcoding the video.
+/// # Returns:
+/// `Result<f64, String>` - Duration in seconds or error message.
 ///
-pub async fn transcode_video(
+fn get_video_duration(file_path: &str) -> Result<f64, String> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            file_path,
+        ])
+        .output()
+        .expect("failed to execute ffprobe");
+
+    if output.status.success() {
+        let duration_str = String::from_utf8(output.stdout).unwrap();
+        duration_str
+            .trim()
+            .parse::<f64>()
+            .map_err(|e| e.to_string())
+    } else {
+        Err(String::from("Failed to retrieve video duration"))
+    }
+}
+
+/// Parses ffmpeg progress output to calculate and return the transcoding progress as a percentage.
+/// This function searches for time stamps in the ffmpeg output and calculates the progress based
+/// on the total duration of the video. If the total duration is not positive, it returns 0 to
+/// prevent division by zero errors.
+///
+/// # Arguments
+/// * `line` - A string slice containing a line of ffmpeg output.
+/// * `total_duration` - The total duration of the video in seconds.
+///
+/// # Returns
+/// An `Option<i32>` representing the transcoding progress percentage, or `None` if the progress
+/// cannot be determined from the given line.
+///
+fn parse_progress(line: &str, total_duration: f64) -> Option<i32> {
+    if total_duration <= 0.0 {
+        return Some(0); // Prevent division by zero
+    }
+
+    let re = Regex::new(r"time=(\d+):(\d+):(\d+\.\d+)").unwrap();
+    if let Some(caps) = re.captures(line) {
+        let hours = caps.get(1).unwrap().as_str().parse::<f64>().unwrap_or(0.0);
+        let minutes = caps.get(2).unwrap().as_str().parse::<f64>().unwrap_or(0.0);
+        let seconds = caps.get(3).unwrap().as_str().parse::<f64>().unwrap_or(0.0);
+        let current_time_seconds = hours * 3600.0 + minutes * 60.0 + seconds;
+        let progress = ((current_time_seconds / total_duration) * 100.0).round() as i32;
+        return Some(progress);
+    }
+
+    None
+}
+
+/// Executes the ffmpeg command to transcode a video file based on the specified parameters.
+/// This function supports GPU acceleration and handles various video formats.
+///
+/// # Arguments
+/// * `task_id` - A unique identifier for the transcoding task.
+/// * `format_index` - The index specifying the target video format from a predefined list.
+/// * `file_path` - The path to the input video file to be transcoded.
+/// * `file_name` - The name of the input video file.
+/// * `is_gpu` - A boolean flag indicating whether to use GPU acceleration for transcoding.
+/// * `format` - The desired output video format.
+/// * `total_duration` - The total duration of the video file in seconds.
+///
+/// # Returns
+/// A `Result<(), Status>` indicating the success or failure of the transcoding operation.
+///
+fn run_ffmpeg(
+    task_id: String,
+    format_index: usize,
     file_path: &str,
-    video_format: &str,
-    is_encrypted: bool,
+    file_name: &str,
     is_gpu: bool,
-) -> Result<Response<TranscodeResponse>, Status> {
-    println!("transcode_video: Processing video at: {}", file_path);
-    println!("transcode_video: video_format: {}", video_format);
-    println!("transcode_video: is_encrypted: {}", is_encrypted);
-    println!("transcode_video: is_gpu: {}", is_gpu);
-
-    let file_name = Path::new(file_path)
-        .file_name()
-        .ok_or_else(|| Status::new(Code::InvalidArgument, "Invalid file path"))?
-        .to_string_lossy()
-        .to_string();
-
-    let format = get_video_format_from_str(video_format)?;
-
-    let file_name = format!("{}_{}", file_name, format.id.to_string());
-
-    println!("Transcoding video: {}", &file_path);
-    println!("is_gpu = {}", &is_gpu);
-
-    let mut encryption_key1: Vec<u8> = Vec::new();
-
-    let mut response: TranscodeResponse;
-
+    format: &VideoFormat,
+    total_duration: f64,
+) -> Result<(), Status> {
     let mut cmd = Command::new("ffmpeg");
+    // Ensure verbose output for detailed progress information
+    cmd.arg("-v").arg("info");
+    cmd.arg("-progress").arg("pipe:2");
+    cmd.arg("-stats_period").arg("1");
 
     if is_gpu {
         println!("GPU transcoding");
@@ -205,10 +269,99 @@ pub async fn transcode_video(
         }
     }
 
-    println!("Transcode cmd {:?}", cmd);
+    // // Ensure stderr is captured
+    // cmd.stderr(Stdio::piped());
 
-    let output = cmd.output().expect("Failed to execute command");
-    println!("Transcode output {:?}", output);
+    // Ensure stderr is captured and stdout is suppressed
+    cmd.stderr(Stdio::piped()).stdout(Stdio::null());
+
+    let mut child = cmd.spawn().expect("failed to start ffmpeg command");
+
+    // Take the stderr handle if available
+    if let Some(stderr) = child.stderr.take() {
+        let reader = BufReader::new(stderr);
+
+        // Assuming `reader` is a `BufReader` wrapped around `ChildStderr` or similar
+        let mut last_progress = 0; // Initialize last known progress
+
+        for line_result in reader.lines() {
+            if let Ok(line) = line_result {
+                if let Some(progress) = parse_progress(&line, total_duration) {
+                    last_progress = progress;
+                    shared::update_progress(&task_id, format_index, last_progress);
+                    // Update the global progress map
+                }
+                println!("£££££ {} £££££", line);
+                println!("Progress: {}%", last_progress);
+            }
+        }
+    }
+
+    // Wait for ffmpeg to finish
+    let output = child.wait().expect("Transcode process wasn't running");
+    println!("Transcode finished with status: {}", output);
+
+    Ok(())
+}
+
+/// Asynchronously transcodes a video from a given format to another using ffmpeg,
+/// based on the specified transcoder settings. This function supports optional
+/// encryption and GPU acceleration.
+///
+/// # Arguments
+/// * `task_id` - A unique identifier for the transcoding task.
+/// * `format_index` - The index specifying the target video format from a predefined list.
+/// * `file_path` - The path to the input video file to be transcoded.
+/// * `video_format` - The desired output video format.
+/// * `is_encrypted` - A boolean flag indicating whether the output video should be encrypted.
+/// * `is_gpu` - A boolean flag indicating whether to use GPU acceleration for transcoding.
+///
+/// # Returns
+/// A `Result` wrapping a `Response` with the `TranscodeVideoResponse` on success,
+/// or a `Status` error on failure.
+///
+pub async fn transcode_video(
+    task_id: String,
+    format_index: usize,
+    file_path: &str,
+    video_format: &str,
+    is_encrypted: bool,
+    is_gpu: bool,
+) -> Result<Response<TranscodeVideoResponse>, Status> {
+    println!("transcode_video: Processing video at: {}", file_path);
+    println!("transcode_video: video_format: {}", video_format);
+    println!("transcode_video: is_encrypted: {}", is_encrypted);
+    println!("transcode_video: is_gpu: {}", is_gpu);
+
+    let file_name = Path::new(file_path)
+        .file_name()
+        .ok_or_else(|| Status::new(Code::InvalidArgument, "Invalid file path"))?
+        .to_string_lossy()
+        .to_string();
+
+    let format = get_video_format_from_str(video_format)?;
+
+    let file_name = format!("{}_{}", file_name, format.id.to_string());
+
+    println!("Transcoding video: {}", &file_path);
+    println!("is_gpu = {}", &is_gpu);
+
+    let total_duration = get_video_duration(file_path).unwrap_or_else(|_| 0.0);
+    println!("Total video duration: {} seconds", total_duration);
+
+    let mut encryption_key1: Vec<u8> = Vec::new();
+
+    let response: TranscodeVideoResponse;
+
+    run_ffmpeg(
+        task_id,
+        format_index,
+        file_path,
+        &file_name,
+        is_gpu,
+        &format,
+        total_duration,
+    )?;
 
     if is_encrypted {
         match encrypt_file_xchacha20(
@@ -343,8 +496,8 @@ pub async fn transcode_video(
 
                 println!("Transcoding task finished");
 
-                // Return the TranscodeResponse with the job ID
-                response = TranscodeResponse {
+                // Return the TranscodeVideoResponse with the job ID
+                response = TranscodeVideoResponse {
                     status_code: 200,
                     message: String::from("Transcoding successful"),
                     cid: encrypted_cid,
@@ -354,7 +507,7 @@ pub async fn transcode_video(
                 println!("!!!!!!!!!!!!!!!!!!!!!2160p no cid");
                 println!("Error: {}", e); // This line is added to print out the error message
 
-                response = TranscodeResponse {
+                response = TranscodeVideoResponse {
                     status_code: 500,
                     message: format!("Transcoding task failed with error {}", e),
                     cid: "".to_string(),
@@ -374,8 +527,8 @@ pub async fn transcode_video(
 
                 println!("Transcoding task finished");
 
-                // Return the TranscodeResponse with the job ID
-                response = TranscodeResponse {
+                // Return the TranscodeVideoResponse with the job ID
+                response = TranscodeVideoResponse {
                     status_code: 200,
                     message: String::from("Transcoding successful"),
                     cid,
@@ -385,7 +538,7 @@ pub async fn transcode_video(
                 println!("!!!!!!!!!!!!!!!!!!!!!2160p no cid");
                 println!("Error: {}", e); // This line is added to print out the error message
 
-                response = TranscodeResponse {
+                response = TranscodeVideoResponse {
                     status_code: 500,
                     message: format!("Transcoding task failed with error {}", e),
                     cid: "".to_string(),

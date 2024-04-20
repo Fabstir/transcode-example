@@ -32,7 +32,7 @@ Upon receiving the request, the transcoder server responds with a JSON message, 
 
 The transcoder server then transcodes the source video into each of the specified formats and uploads the transcoded videos to the specified storage solution.
 
-The user can query the status of the transcoding job by calling the `get_transcoded` RESTful API endpoint with the `task_id` as a parameter. If the transcoding job has not finished, the user receives an error message. If the transcoding job has finished, the user receives an array of JSON objects, including the `media_formats` array with an additional `src` property that gives the `cid` of the video, prefixed with either `s5://` or `ipfs://` to indicate the storage location.
+The user can query the status of the transcoding job by calling the `get_transcoded` RESTful API endpoint with the `task_id` as a parameter. If the `task_id` is not valid, the user receives a 404 `status_code`. If the transcoding job has not finished then the `progress` integer value returned will be less than 100 and the `metadata` media formats array will be empty. If the transcoding job has finished, the user receives a `progress` of 100 and the `metadata` array of media format JSON objects where each media format object has an additional `src` property that gives the `cid` of the video, prefixed with either `s5://` or `ipfs://` to indicate the storage location.
 
 # To get started
 
@@ -74,6 +74,7 @@ message GetTranscodedRequest {
 message GetTranscodedResponse {
     int32 status_code = 1;
     string metadata = 2;
+    int32 progress = 3;
 }
 ```
 
